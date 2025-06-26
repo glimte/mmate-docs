@@ -35,7 +35,7 @@ Perfect if you're using:
 
 **Quick Install:**
 ```bash
-go get github.com/mmate/mmate-go
+go get github.com/glimte/mmate-go
 ```
 
 </td>
@@ -114,7 +114,7 @@ await publisher.PublishEventAsync(
 
 **Go**
 ```go
-import "github.com/mmate/mmate-go"
+import "github.com/glimte/mmate-go"
 
 // Configure
 publisher := mmate.NewPublisher(

@@ -20,7 +20,7 @@ dotnet tool install -g Mmate.Monitor
 <td>
 
 ```bash
-go install github.com/mmate/mmate-go/cmd/monitor@latest
+go install github.com/glimte/mmate-go/cmd/monitor@latest
 ```
 
 </td>

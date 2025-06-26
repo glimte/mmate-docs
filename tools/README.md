@@ -15,7 +15,7 @@ Interactive terminal UI dashboard for real-time monitoring.
 ### CLI Monitor
 ```bash
 # Go
-go install github.com/mmate/mmate-go/cmd/monitor@latest
+go install github.com/glimte/mmate-go/cmd/monitor@latest
 
 # .NET
 dotnet tool install -g Mmate.Monitor
@@ -24,7 +24,7 @@ dotnet tool install -g Mmate.Monitor
 ### TUI Dashboard
 ```bash
 # Go
-go install github.com/mmate/mmate-go/cmd/mmate-tui@latest
+go install github.com/glimte/mmate-go/cmd/mmate-tui@latest
 
 # .NET
 dotnet tool install -g Mmate.Tui

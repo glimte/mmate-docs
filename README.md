@@ -83,4 +83,4 @@ Mmate provides high-level abstractions for messaging patterns built on top of Ra
 
 See the contributing guide for your platform:
 - [Contributing to .NET](https://github.com/mmate/mmate-dotnet/CONTRIBUTING.md)
-- [Contributing to Go](https://github.com/mmate/mmate-go/CONTRIBUTING.md)
+- [Contributing to Go](https://github.com/glimte/mmate-go/CONTRIBUTING.md)

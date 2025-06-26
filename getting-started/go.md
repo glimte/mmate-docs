@@ -11,7 +11,7 @@ This guide will help you get up and running with Mmate-Go in just a few minutes.
 ## Installation
 
 ```bash
-go get github.com/mmate/mmate-go
+go get github.com/glimte/mmate-go
 ```
 
 ## Quick Start
@@ -38,9 +38,9 @@ import (
     "log"
     "time"
     
-    "github.com/mmate/mmate-go/contracts"
-    "github.com/mmate/mmate-go/internal/rabbitmq"
-    "github.com/mmate/mmate-go/messaging"
+    "github.com/glimte/mmate-go/contracts"
+    "github.com/glimte/mmate-go/internal/rabbitmq"
+    "github.com/glimte/mmate-go/messaging"
 )
 
 // Define your message type
@@ -102,9 +102,9 @@ import (
     "os/signal"
     "syscall"
     
-    "github.com/mmate/mmate-go/contracts"
-    "github.com/mmate/mmate-go/internal/rabbitmq"
-    "github.com/mmate/mmate-go/messaging"
+    "github.com/glimte/mmate-go/contracts"
+    "github.com/glimte/mmate-go/internal/rabbitmq"
+    "github.com/glimte/mmate-go/messaging"
 )
 
 // OrderEventHandler handles order events

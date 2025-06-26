@@ -12,9 +12,9 @@ package main
 import (
     "context"
     "log"
-    "github.com/mmate/mmate-go/contracts"
-    "github.com/mmate/mmate-go/messaging"
-    "github.com/mmate/mmate-go/internal/rabbitmq"
+    "github.com/glimte/mmate-go/contracts"
+    "github.com/glimte/mmate-go/messaging"
+    "github.com/glimte/mmate-go/internal/rabbitmq"
 )
 
 // Define a simple event
@@ -64,9 +64,9 @@ import (
     "log"
     "os"
     "os/signal"
-    "github.com/mmate/mmate-go/contracts"
-    "github.com/mmate/mmate-go/messaging"
-    "github.com/mmate/mmate-go/internal/rabbitmq"
+    "github.com/glimte/mmate-go/contracts"
+    "github.com/glimte/mmate-go/messaging"
+    "github.com/glimte/mmate-go/internal/rabbitmq"
 )
 
 type HelloHandler struct{}
@@ -119,8 +119,8 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/mmate/mmate-go/contracts"
-    "github.com/mmate/mmate-go/messaging"
+    "github.com/glimte/mmate-go/contracts"
+    "github.com/glimte/mmate-go/messaging"
 )
 
 // Query definition
@@ -203,7 +203,7 @@ package main
 import (
     "context"
     "errors"
-    "github.com/mmate/mmate-go/contracts"
+    "github.com/glimte/mmate-go/contracts"
 )
 
 type CreateOrderCommand struct {
@@ -282,7 +282,7 @@ package main
 
 import (
     "context"
-    "github.com/mmate/mmate-go/stageflow"
+    "github.com/glimte/mmate-go/stageflow"
 )
 
 // Workflow context
@@ -395,7 +395,7 @@ package main
 import (
     "context"
     "time"
-    "github.com/mmate/mmate-go/interceptors"
+    "github.com/glimte/mmate-go/interceptors"
     "github.com/prometheus/client_golang/prometheus"
 )
 
@@ -469,7 +469,7 @@ package main
 import (
     "context"
     "sync"
-    "github.com/mmate/mmate-go/messaging"
+    "github.com/glimte/mmate-go/messaging"
 )
 
 func main() {
@@ -516,7 +516,7 @@ package main
 import (
     "context"
     "errors"
-    "github.com/mmate/mmate-go/messaging"
+    "github.com/glimte/mmate-go/messaging"
 )
 
 // Custom error types
@@ -603,7 +603,7 @@ package main
 import (
     "context"
     "net/http"
-    "github.com/mmate/mmate-go/health"
+    "github.com/glimte/mmate-go/health"
 )
 
 type HealthService struct {

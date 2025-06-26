@@ -11,7 +11,7 @@ This section contains Go-specific documentation for Mmate.
 ## Quick Links
 
 - [Getting Started Guide](../../getting-started/go.md)
-- [Go Repository](https://github.com/mmate/mmate-go)
+- [Go Repository](https://github.com/glimte/mmate-go)
 
 ## Go-Specific Features
 
