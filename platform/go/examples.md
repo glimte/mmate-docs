@@ -12,9 +12,8 @@ package main
 import (
     "context"
     "log"
+    mmate "github.com/glimte/mmate-go"
     "github.com/glimte/mmate-go/contracts"
-    "github.com/glimte/mmate-go/messaging"
-    "github.com/glimte/mmate-go/internal/rabbitmq"
 )
 
 // Define a simple event
@@ -27,16 +26,15 @@ type HelloEvent struct {
 func main() {
     ctx := context.Background()
     
-    // Create connection
-    connManager := rabbitmq.NewConnectionManager("amqp://localhost")
-    channelPool, err := rabbitmq.NewChannelPool(connManager)
+    // Create client
+    client, err := mmate.NewClient("amqp://localhost")
     if err != nil {
         log.Fatal(err)
     }
+    defer client.Close()
     
-    // Create publisher
-    publisher := messaging.NewMessagePublisher(
-        rabbitmq.NewPublisher(channelPool))
+    // Get publisher
+    publisher := client.Publisher()
     
     // Publish event
     event := &HelloEvent{
@@ -64,10 +62,16 @@ import (
     "log"
     "os"
     "os/signal"
+    mmate "github.com/glimte/mmate-go"
     "github.com/glimte/mmate-go/contracts"
     "github.com/glimte/mmate-go/messaging"
-    "github.com/glimte/mmate-go/internal/rabbitmq"
 )
+
+type HelloEvent struct {
+    contracts.BaseEvent
+    Message string `json:"message"`
+    From    string `json:"from"`
+}
 
 type HelloHandler struct{}
 
@@ -85,20 +89,26 @@ func main() {
     sigChan := make(chan os.Signal, 1)
     signal.Notify(sigChan, os.Interrupt)
     
-    // Create connection
-    connManager := rabbitmq.NewConnectionManager("amqp://localhost")
-    channelPool, err := rabbitmq.NewChannelPool(connManager)
+    // Create client
+    client, err := mmate.NewClient("amqp://localhost")
     if err != nil {
         log.Fatal(err)
     }
+    defer client.Close()
     
-    // Create subscriber
-    subscriber := messaging.NewMessageSubscriber(
-        rabbitmq.NewSubscriber(channelPool))
+    // Get subscriber and dispatcher
+    subscriber := client.Subscriber()
+    dispatcher := client.Dispatcher()
+    
+    // Register handler
+    dispatcher.RegisterHandler("HelloEvent", 
+        messaging.MessageHandlerFunc(func(ctx context.Context, msg contracts.Message) error {
+            return (&HelloHandler{}).Handle(ctx, msg)
+        }))
     
     // Subscribe
     err = subscriber.Subscribe(ctx, "hello.queue", "HelloEvent", 
-        &HelloHandler{})
+        dispatcher, messaging.WithPrefetchCount(10))
     if err != nil {
         log.Fatal(err)
     }
@@ -695,6 +705,7 @@ import (
     "testing"
     "github.com/stretchr/testify/assert"
     "github.com/stretchr/testify/mock"
+    "github.com/glimte/mmate-go/contracts"
 )
 
 // Mock publisher
@@ -753,14 +764,12 @@ func TestOrderWorkflow_Integration(t *testing.T) {
     // Setup
     ctx := context.Background()
     
-    // Create real connections
-    connManager := rabbitmq.NewConnectionManager(
-        "amqp://localhost")
-    channelPool, err := rabbitmq.NewChannelPool(connManager)
+    // Create client with real connections
+    client, err := mmate.NewClient("amqp://localhost")
     require.NoError(t, err)
+    defer client.Close()
     
-    publisher := messaging.NewMessagePublisher(
-        rabbitmq.NewPublisher(channelPool))
+    publisher := client.Publisher()
     
     // Test workflow
     workflow := createTestWorkflow()

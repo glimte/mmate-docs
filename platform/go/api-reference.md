@@ -119,109 +119,199 @@ type BaseReply struct {
 func NewBaseReply(requestID, correlationID string) BaseReply
 ```
 
-## Messaging
+## Client
 
-### Publisher Interface
+### Client Creation
 
 ```go
-type Publisher interface {
-    PublishCommand(ctx context.Context, cmd Command) error
-    PublishEvent(ctx context.Context, evt Event) error
-    PublishQuery(ctx context.Context, qry Query) error
-    PublishReply(ctx context.Context, reply Reply, replyTo string) error
-}
+// Create client with default RabbitMQ transport
+func NewClient(connectionString string) (*Client, error)
+
+// Create client with options
+func NewClientWithOptions(connectionString string, options ...ClientOption) (*Client, error)
+
+// Client options
+type ClientOption func(*clientConfig)
+
+func WithLogger(logger *slog.Logger) ClientOption
 ```
+
+### Client Methods
+
+```go
+type Client struct {
+    // ... internal fields
+}
+
+// Get the message publisher
+func (c *Client) Publisher() *MessagePublisher
+
+// Get the message subscriber
+func (c *Client) Subscriber() *MessageSubscriber
+
+// Get the message dispatcher
+func (c *Client) Dispatcher() *MessageDispatcher
+
+// Get the underlying transport
+func (c *Client) Transport() Transport
+
+// Close all resources
+func (c *Client) Close() error
+```
+
+## Messaging
 
 ### MessagePublisher
 
 ```go
 type MessagePublisher struct {
-    transport Transport
-    options   PublisherOptions
+    // ... internal fields
 }
 
-// Constructor
-func NewMessagePublisher(transport Transport, opts ...PublisherOption) *MessagePublisher
+// Constructor (typically accessed via Client.Publisher())
+func NewMessagePublisher(transport TransportPublisher, opts ...PublisherOption) *MessagePublisher
 
-// Methods
-func (p *MessagePublisher) PublishCommand(ctx context.Context, cmd Command) error
-func (p *MessagePublisher) PublishEvent(ctx context.Context, evt Event) error
-func (p *MessagePublisher) PublishQuery(ctx context.Context, qry Query) error
-func (p *MessagePublisher) PublishReply(ctx context.Context, reply Reply, replyTo string) error
+// Publishing methods
+func (p *MessagePublisher) Publish(ctx context.Context, msg Message, options ...PublishOption) error
+func (p *MessagePublisher) PublishCommand(ctx context.Context, cmd Command, options ...PublishOption) error
+func (p *MessagePublisher) PublishEvent(ctx context.Context, evt Event, options ...PublishOption) error
+func (p *MessagePublisher) PublishReply(ctx context.Context, reply Reply, replyTo string, options ...PublishOption) error
 
-// Options
-type PublisherOption func(*PublisherOptions)
+// Publisher options
+type PublisherOption func(*MessagePublisher)
 
-func WithExchange(exchange string) PublisherOption
-func WithConfirmMode(enabled bool) PublisherOption
-func WithTimeout(timeout time.Duration) PublisherOption
-```
+func WithPublisherLogger(logger *slog.Logger) PublisherOption
+func WithCircuitBreaker(cb *CircuitBreaker) PublisherOption
+func WithRetryPolicy(policy RetryPolicy) PublisherOption
+func WithDefaultTTL(ttl time.Duration) PublisherOption
 
-### Subscriber Interface
+// Publish options
+type PublishOption func(*PublishOptions)
 
-```go
-type Subscriber interface {
-    Subscribe(ctx context.Context, queue, messageType string, handler Handler) error
-    SubscribeWithOptions(ctx context.Context, queue, messageType string, 
-        handler Handler, opts ...SubscriberOption) error
-}
-
-type Handler interface {
-    Handle(ctx context.Context, msg Message) error
-}
+func WithExchange(exchange string) PublishOption
+func WithRoutingKey(routingKey string) PublishOption
+func WithTTL(ttl time.Duration) PublishOption
+func WithPriority(priority uint8) PublishOption
+func WithPersistent(persistent bool) PublishOption
+func WithHeaders(headers map[string]interface{}) PublishOption
+func WithConfirmDelivery(confirm bool) PublishOption
+func WithCorrelationID(correlationID string) PublishOption
+func WithReplyTo(replyTo string) PublishOption
 ```
 
 ### MessageSubscriber
 
 ```go
 type MessageSubscriber struct {
-    transport Transport
-    options   SubscriberOptions
+    // ... internal fields
 }
 
-// Constructor
-func NewMessageSubscriber(transport Transport, opts ...SubscriberOption) *MessageSubscriber
+// Constructor (typically accessed via Client.Subscriber())
+func NewMessageSubscriber(transport TransportSubscriber, dispatcher *MessageDispatcher, opts ...SubscriberOption) *MessageSubscriber
 
-// Methods
-func (s *MessageSubscriber) Subscribe(ctx context.Context, queue, messageType string, 
-    handler Handler) error
-func (s *MessageSubscriber) SubscribeWithOptions(ctx context.Context, queue, messageType string,
-    handler Handler, opts ...SubscriberOption) error
+// Subscribe to a queue
+func (s *MessageSubscriber) Subscribe(ctx context.Context, queue string, messageType string, 
+    handler MessageHandler, options ...SubscriptionOption) error
 
-// Options
-type SubscriberOption func(*SubscriberOptions)
+// Unsubscribe from a queue
+func (s *MessageSubscriber) Unsubscribe(queue string) error
 
-func WithPrefetchCount(count int) SubscriberOption
-func WithRetryPolicy(policy RetryPolicy) SubscriberOption
+// Get active subscriptions
+func (s *MessageSubscriber) GetSubscriptions() map[string]*Subscription
+
+// Close all subscriptions
+func (s *MessageSubscriber) Close() error
+
+// Subscriber options
+type SubscriberOption func(*MessageSubscriber)
+
+func WithSubscriberLogger(logger *slog.Logger) SubscriberOption
+func WithErrorHandler(errorHandler ErrorHandler) SubscriberOption
 func WithDeadLetterQueue(dlq string) SubscriberOption
-func WithInterceptors(interceptors ...Interceptor) SubscriberOption
+
+// Subscription options
+type SubscriptionOption func(*SubscriptionOptions)
+
+func WithPrefetchCount(count int) SubscriptionOption
+func WithAutoAck(autoAck bool) SubscriptionOption
+func WithSubscriberExclusive(exclusive bool) SubscriptionOption
+func WithSubscriberDurable(durable bool) SubscriptionOption
+func WithAutoDelete(autoDelete bool) SubscriptionOption
+func WithMaxRetries(maxRetries int) SubscriptionOption
+func WithDeadLetterExchange(exchange string) SubscriptionOption
 ```
 
-### Consumer Group
+### MessageHandler Interface
 
 ```go
-type ConsumerGroup struct {
-    name    string
-    size    int
-    options ConsumerGroupOptions
+type MessageHandler interface {
+    Handle(ctx context.Context, msg Message) error
 }
 
-// Constructor
-func NewConsumerGroup(name string, opts ...ConsumerGroupOption) *ConsumerGroup
+// Function adapter for handlers
+type MessageHandlerFunc func(ctx context.Context, msg Message) error
 
-// Methods
-func (g *ConsumerGroup) Start(ctx context.Context, subscriber Subscriber, 
-    queue string, handler Handler) error
-func (g *ConsumerGroup) Stop() error
-func (g *ConsumerGroup) Size() int
-func (g *ConsumerGroup) ActiveWorkers() int
+func (f MessageHandlerFunc) Handle(ctx context.Context, msg Message) error {
+    return f(ctx, msg)
+}
+```
 
-// Options
-type ConsumerGroupOption func(*ConsumerGroupOptions)
+### MessageDispatcher
 
-func WithGroupSize(size int) ConsumerGroupOption
-func WithPrefetchPerWorker(count int) ConsumerGroupOption
-func WithWorkerRestartPolicy(policy RestartPolicy) ConsumerGroupOption
+```go
+type MessageDispatcher struct {
+    // ... internal fields
+}
+
+// Constructor (typically accessed via Client.Dispatcher())
+func NewMessageDispatcher(options ...DispatcherOption) *MessageDispatcher
+
+// Register a handler for a message type
+func (d *MessageDispatcher) RegisterHandler(messageType string, handler MessageHandler, options ...HandlerOption) error
+
+// Unregister a handler
+func (d *MessageDispatcher) UnregisterHandler(messageType string) error
+
+// Handle implements MessageHandler interface
+func (d *MessageDispatcher) Handle(ctx context.Context, msg Message) error
+```
+
+### Transport Interfaces
+
+```go
+// Transport provides both publisher and subscriber functionality
+type Transport interface {
+    Publisher() TransportPublisher
+    Subscriber() TransportSubscriber
+    CreateQueue(ctx context.Context, name string, options QueueOptions) error
+    DeleteQueue(ctx context.Context, name string) error
+    BindQueue(ctx context.Context, queue, exchange, routingKey string) error
+    Connect(ctx context.Context) error
+    Close() error
+    IsConnected() bool
+}
+
+// TransportPublisher defines the interface for publishing messages
+type TransportPublisher interface {
+    Publish(ctx context.Context, exchange, routingKey string, envelope *Envelope) error
+    Close() error
+}
+
+// TransportSubscriber defines the interface for subscribing to messages
+type TransportSubscriber interface {
+    Subscribe(ctx context.Context, queue string, handler func(delivery TransportDelivery) error, 
+        options SubscriptionOptions) error
+    Unsubscribe(queue string) error
+    Close() error
+}
+
+// TransportDelivery represents a message delivery
+type TransportDelivery interface {
+    Body() []byte
+    Acknowledge() error
+    Reject(requeue bool) error
+    Headers() map[string]interface{}
+}
 ```
 
 ### Error Types

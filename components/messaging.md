@@ -75,35 +75,60 @@ await publisher.PublishEventAsync(
 <td>
 
 ```go
-// Create publisher
-publisher, err := messaging.NewMessagePublisher(
-    rabbitmq.NewPublisher(channelPool),
-    messaging.WithLogger(logger))
+// Create mmate client with auto-queue creation
+client, err := mmate.NewClientWithOptions("amqp://admin:admin@localhost:5672/",
+    mmate.WithServiceName("order-service"),
+    mmate.WithQueueBindings(
+        messaging.QueueBinding{
+            Exchange:   "mmate.events",
+            RoutingKey: "order.service.*",
+        },
+    ),
+)
+if err != nil {
+    log.Fatalf("Failed to create client: %v", err)
+}
+defer client.Close()
+
+// Get publisher from client
+publisher := client.Publisher()
+
+// Define your message types
+type OrderCreatedEvent struct {
+    contracts.BaseMessage
+    OrderID    string  `json:"orderId"`
+    CustomerID string  `json:"customerId"`
+    Amount     float64 `json:"amount"`
+}
+
+// Register message types for deserialization
+messaging.Register("OrderCreatedEvent", func() contracts.Message { 
+    return &OrderCreatedEvent{} 
+})
 
 // Publish event
-err = publisher.PublishEvent(ctx,
-    &OrderCreatedEvent{
-        BaseEvent:  contracts.NewBaseEvent(
-            "OrderCreatedEvent", "ORDER-123"),
-        OrderID:    "ORDER-123",
-        CustomerID: "CUST-456", 
-        Amount:     99.99,
-    })
+orderEvent := &OrderCreatedEvent{}
+orderEvent.Type = "OrderCreatedEvent"
+orderEvent.ID = "ORDER-123"
+orderEvent.CorrelationID = "corr-" + time.Now().Format("20060102150405")
+orderEvent.Timestamp = time.Now()
+orderEvent.OrderID = "ORDER-123"
+orderEvent.CustomerID = "CUST-456"
+orderEvent.Amount = 99.99
 
-// Publish command
-err = publisher.PublishCommand(ctx,
-    &ProcessOrderCommand{
-        BaseCommand: contracts.NewBaseCommand(
-            "ProcessOrderCommand"),
-        OrderID:     "ORDER-123",
-    })
+err = publisher.Publish(ctx, orderEvent,
+    messaging.WithExchange("mmate.events"),
+    messaging.WithRoutingKey("order.service.created"),
+    messaging.WithPersistent(true),
+)
 
 // Publish with options
-err = publisher.PublishEvent(ctx,
-    orderEvent,
+err = publisher.Publish(ctx, orderEvent,
+    messaging.WithExchange("mmate.events"),
     messaging.WithRoutingKey("orders.created.priority"),
-    messaging.WithHeader("priority", "high"),
-    messaging.WithExpiration(time.Hour))
+    messaging.WithReplyTo("order.service.reply"),
+    messaging.WithPersistent(true),
+)
 ```
 
 </td>
@@ -168,42 +193,60 @@ await subscriber.SubscribeAsync<OrderCreatedEvent>(
 <td>
 
 ```go
-// Create subscriber
-subscriber, err := messaging.NewMessageSubscriber(
-    rabbitmq.NewSubscriber(channelPool),
-    messaging.WithLogger(logger))
+// Get subscriber and dispatcher from client
+subscriber := client.Subscriber()
+dispatcher := client.Dispatcher()
 
-// Subscribe to events
-err = subscriber.Subscribe(ctx,
-    "order-processor",
-    "OrderCreatedEvent",
-    messaging.HandlerFunc(func(
-        ctx context.Context,
-        msg contracts.Message) error {
-        
-        event := msg.(*OrderCreatedEvent)
-        return orderService.ProcessOrder(
-            ctx, event.OrderID)
-    }))
+// Define message handler
+orderHandler := messaging.MessageHandlerFunc(func(ctx context.Context, msg contracts.Message) error {
+    event, ok := msg.(*OrderCreatedEvent)
+    if !ok {
+        log.Printf("❌ Unexpected message type: %T", msg)
+        return nil
+    }
+    
+    log.Printf("📦 Processing Order: %s for Customer: %s", 
+        event.OrderID, event.CustomerID)
+    
+    // Process the order
+    return orderService.ProcessOrder(ctx, event.OrderID)
+})
 
-// Subscribe with typed handler
+// Register handler with dispatcher
+err = dispatcher.RegisterHandler(&OrderCreatedEvent{}, orderHandler)
+if err != nil {
+    log.Fatalf("Failed to register handler: %v", err)
+}
+
+// Subscribe to the auto-created service queue
+err = subscriber.Subscribe(ctx, client.ServiceQueue(), "OrderCreatedEvent", dispatcher,
+    messaging.WithAutoAck(true), // Enable auto-acknowledgment
+)
+if err != nil {
+    log.Fatalf("Failed to subscribe: %v", err)
+}
+
+log.Printf("✅ Subscribed to queue: %s", client.ServiceQueue())
+
+// Subscribe with typed handler struct
 type OrderHandler struct {
     orderService OrderService
+    logger       *log.Logger
 }
 
-func (h *OrderHandler) Handle(
-    ctx context.Context,
-    msg contracts.Message) error {
-    
+func (h *OrderHandler) Handle(ctx context.Context, msg contracts.Message) error {
     event := msg.(*OrderCreatedEvent)
-    return h.orderService.ProcessOrder(
-        ctx, event.OrderID)
+    
+    h.logger.Printf("Processing order %s", event.OrderID)
+    return h.orderService.ProcessOrder(ctx, event.OrderID)
 }
 
-err = subscriber.Subscribe(ctx,
-    "order-processor",
-    "OrderCreatedEvent", 
-    &OrderHandler{orderService: svc})
+// Register struct handler
+orderHandler := &OrderHandler{
+    orderService: orderService,
+    logger:       log.Default(),
+}
+err = dispatcher.RegisterHandler(&OrderCreatedEvent{}, orderHandler)
 ```
 
 </td>
@@ -247,24 +290,20 @@ await subscriber.SubscribeAsync<OrderEvent>(
 ```go
 // Subscribe with options
 err = subscriber.Subscribe(ctx,
-    "order-processor",
+    client.ServiceQueue(),
     "OrderEvent",
-    handler,
-    messaging.WithPrefetchCount(10),
-    messaging.WithBindingKey("orders.*.created"),
-    messaging.WithAutoAck(false),
-    messaging.WithDurable(true),
-    messaging.WithExclusive(false))
+    dispatcher,
+    messaging.WithAutoAck(false),      // Manual acknowledgment
+    messaging.WithPrefetchCount(10),   // Process 10 messages at once
+)
 
-// Consumer group
-group := messaging.NewConsumerGroup(
-    "order-workers",
-    messaging.WithGroupSize(5),
-    messaging.WithPrefetchCount(2))
-
-err = group.Subscribe(ctx,
-    "order-processor",
-    handler)
+// Subscribe to specific routing patterns
+err = subscriber.Subscribe(ctx,
+    client.ServiceQueue(),
+    "OrderEvent", 
+    dispatcher,
+    messaging.WithAutoAck(true),
+)
 ```
 
 </td>
@@ -951,6 +990,111 @@ Prevent cascading failures:
    - Channel count
    - Memory usage
    - Error rates
+
+## FIFO Queues
+
+FIFO (First-In-First-Out) queues guarantee message ordering and prevent duplicate processing using RabbitMQ's single-active-consumer feature.
+
+### When to Use FIFO Queues
+
+- **Financial transactions**: Ensure deposits/withdrawals are processed in order
+- **State machines**: Sequential state transitions must maintain order
+- **Audit trails**: Events must be recorded in the correct sequence
+- **Critical business processes**: When message ordering is essential
+
+### Go Implementation
+
+```go
+// Enable FIFO mode when creating client
+client, err := mmate.NewClientWithOptions("amqp://admin:admin@localhost:5672/",
+    mmate.WithServiceName("banking-service"),
+    mmate.WithFIFOMode(true), // Enable FIFO queue with single-active-consumer
+    mmate.WithQueueBindings(
+        messaging.QueueBinding{
+            Exchange:   "mmate.events",
+            RoutingKey: "banking.service.*",
+        },
+    ),
+)
+
+// Banking request message with correlation tracking
+type BankingRequest struct {
+    contracts.BaseMessage
+    Operation   string  `json:"operation"`
+    FromAccount string  `json:"fromAccount"`
+    ToAccount   string  `json:"toAccount"`
+    Amount      float64 `json:"amount"`
+    RequestID   string  `json:"requestId"`
+}
+
+// Handler processes messages in FIFO order
+bankingHandler := messaging.MessageHandlerFunc(func(ctx context.Context, msg contracts.Message) error {
+    request := msg.(*BankingRequest)
+    
+    log.Printf("🏦 Processing %s: $%.2f (Correlation: %s)", 
+        request.Operation, request.Amount, request.CorrelationID)
+    
+    // Process banking operation
+    return processBankingOperation(request)
+})
+
+// Subscribe with auto-ack for FIFO processing
+err = subscriber.Subscribe(ctx, client.ServiceQueue(), "BankingRequest", dispatcher,
+    messaging.WithAutoAck(true), // Safe with idempotent operations
+)
+```
+
+### FIFO vs Multiple Consumers
+
+**FIFO Queues:**
+- ✅ Guaranteed message ordering
+- ✅ No duplicate processing (single-active-consumer)
+- ⚠️ Limited horizontal scaling per queue
+
+**Multiple Consumer Strategy:**
+```go
+// For K8s deployments - multiple services can consume from FIFO queues
+// Each service gets its own FIFO queue, messages distributed via routing
+
+// Container B: banking-service-1
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("banking-service-1"),
+    mmate.WithFIFOMode(true),
+    mmate.WithQueueBindings(
+        messaging.QueueBinding{
+            Exchange:   "mmate.events", 
+            RoutingKey: "banking.service.*", // Receives all banking.service.* messages
+        },
+    ),
+)
+
+// Container C: banking-service-2 
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("banking-service-2"), 
+    mmate.WithFIFOMode(true),
+    mmate.WithQueueBindings(
+        messaging.QueueBinding{
+            Exchange:   "mmate.events",
+            RoutingKey: "banking.service.*", // Also receives all banking.service.* messages
+        },
+    ),
+)
+
+// Publisher sends to both using wildcard routing
+err = publisher.Publish(ctx, bankingRequest,
+    messaging.WithExchange("mmate.events"),
+    messaging.WithRoutingKey("banking.service.transfer"), // Reaches both services
+    messaging.WithReplyTo("client.reply"),
+)
+```
+
+### Benefits with Idempotent Operations
+
+When operations are idempotent, multiple FIFO consumers provide:
+- **High Availability**: Service continues if one instance fails
+- **Load Distribution**: Different services can process same requests safely
+- **Fault Tolerance**: System resilience with redundancy
+- **Order Guarantee**: Each service processes messages in correct order
 
 ## Best Practices
 

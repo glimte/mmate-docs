@@ -15,14 +15,20 @@ This section contains Go-specific documentation for Mmate.
 
 ## Go-Specific Features
 
-### Manual Dependency Injection
-Unlike .NET's built-in DI, Go uses explicit wiring:
+### Simple Client Creation
+Go uses a simple factory pattern with transport abstraction:
 
 ```go
-connManager := rabbitmq.NewConnectionManager(url)
-channelPool, _ := rabbitmq.NewChannelPool(connManager)
-publisher := messaging.NewMessagePublisher(
-    rabbitmq.NewPublisher(channelPool))
+// Create client with RabbitMQ transport (default)
+client, err := mmate.NewClient("amqp://localhost:5672")
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+// Access publisher and subscriber
+publisher := client.Publisher()
+subscriber := client.Subscriber()
 ```
 
 ### Context-Based Cancellation
