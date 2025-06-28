@@ -8,7 +8,7 @@ This guide will help you get started with Mmate on your platform of choice.
 <tr>
 <td width="50%">
 
-### 🔷 [.NET Getting Started](../dotnet/quick-start.md)
+### 🔷 [.NET Getting Started](getting-started/dotnet.md)
 
 Perfect if you're using:
 - C# / F# / VB.NET
@@ -25,7 +25,7 @@ dotnet add package Mmate.StageFlow
 </td>
 <td width="50%">
 
-### 🔶 [Go Getting Started](../go/getting-started.md)
+### 🔶 [Go Getting Started](getting-started/go.md)
 
 Perfect if you're using:
 - Go 1.21 or later
@@ -217,38 +217,38 @@ Publisher → Exchange → Queue → Consumer → Handler
 ### By Feature
 
 1. **Basic Messaging**
-   - [Message Patterns](../patterns/README.md)
-   - [Contracts](../components/contracts/README.md)
-   - [Publishing Messages](../components/messaging/README.md#publishing)
-   - [Consuming Messages](../components/messaging/README.md#consuming)
+   - [Message Patterns](patterns.md)
+   - [Contracts](components/contracts.md)
+   - [Publishing Messages](components/messaging.md#publishing)
+   - [Consuming Messages](components/messaging.md#consuming)
 
 2. **Advanced Patterns**
-   - [Request/Reply with Bridge](../components/bridge/README.md)
-   - [Workflows with StageFlow](../components/stageflow/README.md)
-   - [Consumer Groups](../patterns/consumer-groups.md)
+   - [Request/Reply with Bridge](components/bridge.md)
+   - [Workflows with StageFlow](components/stageflow.md)
+   - [Consumer Groups](patterns.md#consumer-groups)
 
 3. **Production Features**
-   - [Interceptors](../components/interceptors/README.md)
-   - [Reliability Patterns](../advanced/reliability.md)
-   - [Monitoring](../components/monitoring/README.md)
-   - [Performance Tuning](../advanced/performance.md)
+   - [Interceptors](components/interceptors.md)
+   - [Reliability Patterns](advanced/reliability.md)
+   - [Monitoring](components/monitoring.md)
+   - [Performance Tuning](advanced/performance.md)
 
 ### By Learning Path
 
 **New to Message-Driven Architecture?**
-1. Read [Architecture Overview](../architecture/README.md)
+1. Read [Architecture Overview](architecture.md)
 2. Try the [Hello World Example](#hello-world---publisher)
-3. Learn about [Message Patterns](../patterns/README.md)
+3. Learn about [Message Patterns](patterns.md)
 
 **Migrating from Another System?**
-1. Check [Migration Guides](../migration/README.md)
-2. Review [API References](../README.md#api-references)
-3. Study [Examples](../README.md#examples)
+1. Check [Migration Guides](migration/README.md)
+2. Review [Platform Documentation](README.md#platform-specific)
+3. Study [Examples](platform/)
 
 **Building Production Systems?**
-1. Implement [Health Monitoring](../components/monitoring/README.md)
-2. Configure [Reliability Patterns](../advanced/reliability.md)
-3. Plan [Deployment Strategy](../advanced/deployment.md)
+1. Implement [Health Monitoring](components/monitoring.md)
+2. Configure [Reliability Patterns](advanced/reliability.md)
+3. Study [Performance Optimization](advanced/performance.md)
 
 ## Common Tasks
 
@@ -291,9 +291,9 @@ Publisher → Exchange → Queue → Consumer → Handler
 
 Choose your platform and dive in:
 
-- **[.NET Detailed Guide →](../dotnet/quick-start.md)**
-- **[Go Detailed Guide →](../go/quick-start.md)**
+- **[.NET Detailed Guide →](platform/dotnet/)**
+- **[Go Detailed Guide →](platform/go/)**
 
 Or explore:
-- **[Example Projects →](../README.md#examples)**
-- **[API Documentation →](../README.md#api-references)**
+- **[Example Projects →](platform/)**
+- **[API Documentation →](README.md#platform-specific)**

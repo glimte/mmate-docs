@@ -28,12 +28,47 @@ This section covers advanced topics for production deployment and optimization o
 - Contract testing
 - Load testing
 
+### 🎯 [Auto Acknowledgment](auto-acknowledgment.md)
+- Message acknowledgment patterns
+- Strategies and best practices
+- Error handling
+- Manual acknowledgment
 
-### 🔍 [Troubleshooting](troubleshooting.md)
-- Common issues
-- Debugging techniques
-- Performance problems
-- Connection issues
+### 🔄 [StageFlow Workflows](stageflow-workflows.md)
+- Advanced workflow patterns
+- Complex orchestration
+- State management
+- Compensation strategies
+
+### 🔁 [Retry Logic](retry-logic.md)
+- Retry strategies
+- Exponential backoff
+- Custom retry policies
+- Integration with circuit breakers
+
+### 🛡️ [Circuit Breaker](circuit-breaker.md)
+- Circuit breaker pattern
+- State management
+- Configuration options
+- Monitoring circuit health
+
+### 📝 [Response Tracking](response-tracking.md)
+- Request-response correlation
+- Timeout management
+- Response aggregation
+- Error handling
+
+### 🔑 [Idempotency](idempotency.md)
+- Idempotent message handling
+- Deduplication strategies
+- State management
+- Best practices
+
+### 🚀 [Complete Solutions](complete-solutions.md)
+- Production-ready examples
+- End-to-end implementations
+- Best practice demonstrations
+- Common patterns
 
 ## Prerequisites
 

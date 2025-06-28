@@ -14,9 +14,10 @@ Mmate provides high-level abstractions for messaging patterns built on top of Ra
 
 ## Quick Start
 
-- **[Getting Started](getting-started/README.md)** - Choose your platform and get running in minutes
+- **[Getting Started - .NET](getting-started/dotnet.md)** - Get started with .NET implementation
+- **[Getting Started - Go](getting-started/go.md)** - Get started with Go implementation
 - **[Architecture Overview](architecture.md)** - Understand the core concepts
-- **[Examples](platform/)** - Complete code examples for both platforms
+- **[Quick Start Guide](quick-start.md)** - Quick introduction to Mmate
 
 ## Documentation Structure
 
@@ -54,12 +55,12 @@ Mmate provides high-level abstractions for messaging patterns built on top of Ra
 - **[Performance](advanced/performance.md)** - Optimization and tuning
 - **[Security](advanced/security.md)** - Authentication and authorization
 - **[Testing](advanced/testing.md)** - Testing strategies
-- **[Deployment](advanced/deployment.md)** - Production deployment
-- **[Troubleshooting](advanced/troubleshooting.md)** - Common issues
+- **[Auto Acknowledgment](advanced/auto-acknowledgment.md)** - Message acknowledgment patterns
+- **[StageFlow Workflows](advanced/stageflow-workflows.md)** - Advanced workflow patterns
 
 ### 🔧 Tools
-- **[CLI Monitor](tools/cli-monitor.md)** - Command-line monitoring
-- **[TUI Dashboard](tools/tui-dashboard.md)** - Interactive terminal UI
+- **[CLI Monitor](tools/cli-monitor.md)** - Command-line monitoring tool
+- **[Tools Overview](tools/README.md)** - Available development and monitoring tools
 
 ## Platform Comparison
 

@@ -442,4 +442,4 @@ Now that you have the basics:
 - Use channel pooling for concurrent operations
 - Consider consumer groups for scaling
 
-For more help, see the [Troubleshooting Guide](troubleshooting.md).
+For more help, see the [Advanced Topics](../advanced/README.md) section.

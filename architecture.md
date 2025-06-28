@@ -269,7 +269,8 @@ Both platforms support:
 
 ## Next Steps
 
-- [Getting Started Guide](../getting-started/README.md)
-- [Platform-Specific Guides](../README.md#platform-specific)
-- [Message Patterns](../patterns/README.md)
-- [Component Documentation](../components/README.md)
+- [Getting Started - .NET](getting-started/dotnet.md)
+- [Getting Started - Go](getting-started/go.md)
+- [Platform-Specific Guides](README.md#platform-specific)
+- [Message Patterns](patterns.md)
+- [Component Documentation](components/README.md)
