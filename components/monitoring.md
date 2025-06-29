@@ -2,6 +2,8 @@
 
 The monitoring component provides comprehensive observability for Mmate messaging systems, including health checks, metrics, and monitoring tools.
 
+> **Service-Scoped Monitoring**: Each microservice should monitor only its own resources to prevent "mastodon" patterns where one service monitors the entire cluster. See [Service-Scoped Monitoring](#service-scoped-monitoring) for implementation patterns.
+
 ## Overview
 
 The monitoring component offers:
@@ -76,36 +78,53 @@ public class MessageProcessingHealthCheck : IHealthCheck
 <td>
 
 ```go
-// Health check implementation
-type HealthChecker struct {
-    monitor *Monitor
+import "github.com/glimte/mmate-go"
+
+// Service-scoped health monitoring (RECOMMENDED)
+func setupServiceHealth(client *mmate.Client, connectionString string) {
+    http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+        ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+        defer cancel()
+        
+        // Check health of THIS service's resources only
+        health, err := client.GetServiceHealth(ctx)
+        if err != nil {
+            http.Error(w, err.Error(), http.StatusServiceUnavailable)
+            return
+        }
+        
+        statusCode := http.StatusOK
+        if health.Status != "healthy" {
+            statusCode = http.StatusServiceUnavailable
+        }
+        
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(statusCode)
+        json.NewEncoder(w).Encode(health)
+    })
 }
 
-func (h *HealthChecker) CheckHealth(
-    ctx context.Context) (*HealthStatus, error) {
-    
-    status := &HealthStatus{
-        Status: HealthStatusHealthy,
-        Checks: make(map[string]CheckResult),
+// Custom health checks with service monitor
+func advancedHealthCheck(client *mmate.Client) error {
+    serviceMonitor, err := client.NewServiceMonitor()
+    if err != nil {
+        return err
     }
     
-    // Check RabbitMQ connection
-    connCheck := h.checkConnection(ctx)
-    status.Checks["rabbitmq"] = connCheck
-    if connCheck.Status != HealthStatusHealthy {
-        status.Status = HealthStatusUnhealthy
+    ctx := context.Background()
+    
+    // Check this service's queue health only
+    queueInfo, err := serviceMonitor.ServiceQueueInfo(ctx)
+    if err != nil {
+        return fmt.Errorf("queue health check failed: %w", err)
     }
     
-    // Check message processing
-    procCheck := h.checkProcessing(ctx)
-    status.Checks["processing"] = procCheck
-    if procCheck.Status == HealthStatusUnhealthy {
-        status.Status = HealthStatusUnhealthy
-    } else if procCheck.Status == HealthStatusDegraded {
-        status.Status = HealthStatusDegraded
+    // Apply service-specific thresholds
+    if queueInfo.Messages > 1000 {
+        return fmt.Errorf("queue depth too high: %d messages", queueInfo.Messages)
     }
     
-    return status, nil
+    return nil
 }
 
 func (h *HealthChecker) checkProcessing(
@@ -1333,33 +1352,178 @@ mmate_queue_depth{queue=~".*"} /
 rate(mmate_messages_processed_total{queue=~".*"}[5m])
 ```
 
+## Service-Scoped Monitoring
+
+### Philosophy: Avoid the "Mastodon" Anti-Pattern
+
+Each microservice should monitor **only its own resources** to maintain proper service boundaries and prevent one service from becoming a "mastodon" that monitors the entire cluster.
+
+#### ✅ What Each Service Should Monitor
+- Its own message processing metrics (via interceptors)
+- Its own queue(s) health
+- Its own error rates and processing times
+- Shared broker health (safe for all services)
+
+#### ❌ What Services Should NOT Monitor
+- Other services' queues or metrics
+- Cluster-wide statistics
+- Resources they don't own
+
+### Go Implementation
+
+<table>
+<tr>
+<th>Service-Scoped Approach</th>
+<th>Mastodon Anti-Pattern</th>
+</tr>
+<tr>
+<td>
+
+```go
+// ✅ GOOD: Service-scoped monitoring
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("user-service"),
+    mmate.WithDefaultMetrics(), // Only THIS service's metrics
+)
+
+// Monitor only this service's resources
+serviceMetrics, err := client.GetServiceMetrics(ctx, connectionString)
+serviceHealth, err := client.GetServiceHealth(ctx, connectionString)
+
+// Set up service-scoped endpoints
+http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+    // Only exposes user-service metrics
+    metrics, _ := client.GetServiceMetrics(r.Context(), connectionString)
+    json.NewEncoder(w).Encode(metrics)
+})
+```
+
+</td>
+<td>
+
+```go
+// ❌ BAD: Direct HTTP management API access (removed from library)
+// This anti-pattern has been removed to enforce service-scoped monitoring
+
+// ✅ GOOD: Use service-scoped monitoring instead
+health, err := client.GetServiceHealth(ctx)
+metrics, err := client.GetServiceMetrics(ctx)
+monitor, err := client.NewServiceMonitor()
+```
+
+</td>
+</tr>
+</table>
+
+### Service Monitor for Advanced Use Cases
+
+For advanced monitoring scenarios, use the `ServiceMonitor` to ensure service-scoped access:
+
+```go
+// Create service-scoped monitor
+serviceMonitor, err := client.NewServiceMonitor(connectionString)
+
+// Get this service's queue info only
+queueInfo, err := serviceMonitor.ServiceQueueInfo(ctx)
+
+// Get all queues owned by this service (naming convention)
+serviceQueues, err := serviceMonitor.ServiceOwnedQueues(ctx)
+
+// Safe: Check overall broker health (all services can do this)
+brokerHealth, err := serviceMonitor.BrokerHealth(ctx)
+```
+
+### Multi-Service Architecture Pattern
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│ User Service│    │Order Service│    │Pay Service  │
+│   :8081     │    │   :8082     │    │   :8083     │
+│ /metrics ✅ │    │ /metrics ✅ │    │ /metrics ✅ │
+│ /health  ✅ │    │ /health  ✅ │    │ /health  ✅ │
+└─────────────┘    └─────────────┘    └─────────────┘
+      │                    │                    │
+      │ Only own metrics   │ Only own metrics   │ Only own metrics
+      └────────────────────┼────────────────────┘
+                          │
+               ┌─────────────────┐
+               │ Monitoring Tool │
+               │  (Prometheus)   │  ← Scrapes all service endpoints
+               └─────────────────┘
+```
+
+### Service-Scoped Metrics Export
+
+```go
+// Each service exposes its own metrics in standard format
+func (s *UserService) metricsHandler(w http.ResponseWriter, r *http.Request) {
+    summary := s.client.GetMetricsSummary()
+    
+    // Export only this service's metrics
+    for msgType, count := range summary.MessageCounts {
+        fmt.Fprintf(w, "mmate_messages_total{service=\"user-service\",type=\"%s\"} %d\n", 
+            msgType, count)
+    }
+    
+    for msgType, stats := range summary.ProcessingStats {
+        fmt.Fprintf(w, "mmate_processing_avg_ms{service=\"user-service\",type=\"%s\"} %d\n", 
+            msgType, stats.AvgMs)
+    }
+}
+```
+
+### Naming Conventions for Service Isolation
+
+To enable automatic service-scoped filtering:
+
+```go
+// Service queues follow naming convention:
+// Main queue: "{service-name}-queue" 
+// Additional: "{service-name}-{purpose}"
+
+// User service owns:
+// - user-service-queue (main)
+// - user-service-dlq (dead letter)
+// - user-service-retry (retry queue)
+
+// ServiceMonitor automatically filters these
+serviceQueues, err := serviceMonitor.ServiceOwnedQueues(ctx)
+// Returns only queues starting with "user-service-"
+```
+
 ## Best Practices
 
-1. **Monitoring Strategy**
+1. **Service Isolation**
+   - Each service monitors only its own resources
+   - Use ServiceMonitor for queue-level monitoring
+   - Keep metrics collectors separate per service
+   - Follow naming conventions for automatic filtering
+
+2. **Monitoring Strategy**
    - Monitor both infrastructure and application metrics
    - Set up alerts for critical conditions
    - Track trends over time
    - Use dashboards for visualization
 
-2. **Health Checks**
+3. **Health Checks**
    - Implement multiple health check endpoints
    - Include dependency checks
    - Use appropriate failure thresholds
    - Consider graceful degradation
 
-3. **Performance Monitoring**
+4. **Performance Monitoring**
    - Track message throughput
    - Monitor processing latency
    - Watch resource utilization
    - Identify bottlenecks
 
-4. **Alert Management**
+5. **Alert Management**
    - Define clear alert thresholds
    - Use alert levels appropriately
    - Avoid alert fatigue
    - Include actionable information
 
-5. **DLQ Management**
+6. **DLQ Management**
    - Monitor DLQ growth
    - Analyze failure patterns
    - Implement requeue strategies

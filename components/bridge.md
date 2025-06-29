@@ -380,11 +380,8 @@ for _, r := range replies {
     }
 }
 
-// Using batch helper
-replies, err := bridge.SendBatch(ctx,
-    requests,
-    "qry.pricing.get",
-    10*time.Second)
+// Note: Batch helper is not currently implemented
+// Use goroutines and errgroup for concurrent requests as shown above
 ```
 
 </td>
@@ -444,38 +441,29 @@ var reply = await bridge.SendAndWaitAsync<OrderReply>(
 <td>
 
 ```go
-// Configure retry policy
-retryPolicy := &retry.ExponentialBackoff{
-    MaxAttempts:  3,
-    InitialDelay: time.Second,
-    MaxDelay:     10 * time.Second,
-}
+// Retry and circuit breaker are configured at client level
+retryPolicy := reliability.NewExponentialBackoff(
+    time.Second,      // initial delay
+    10*time.Second,   // max delay
+    2.0,              // multiplier
+    3,                // max attempts
+)
 
-circuitBreaker := circuit.NewBreaker(
-    circuit.WithFailureThreshold(5),
-    circuit.WithResetTimeout(time.Minute),
-    circuit.WithHalfOpenAttempts(3))
+circuitBreaker := reliability.NewCircuitBreaker(
+    reliability.WithFailureThreshold(5),
+    reliability.WithTimeout(time.Minute),
+    reliability.WithSuccessThreshold(2))
 
-bridge := bridge.NewSyncAsyncBridge(
-    publisher, subscriber, logger,
-    bridge.WithRetryPolicy(retryPolicy),
-    bridge.WithCircuitBreaker(circuitBreaker))
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithRetryPolicy(retryPolicy),
+    mmate.WithCircuitBreaker(circuitBreaker))
 
-// Use with specific retry policy
-reply, err := bridge.SendAndWait(ctx,
+// Bridge is accessed via client
+reply, err := client.Bridge().SendAndWait(ctx,
     command,
     "cmd.orders.create",
-    30*time.Second,
-    bridge.WithRetry(
-        retry.FixedDelay{
-            MaxAttempts: 5,
-            Delay:       2 * time.Second,
-        }),
-    bridge.WithOnRetry(func(attempt int, delay time.Duration) {
-        logger.Warn("Retry attempt",
-            "attempt", attempt,
-            "delay", delay)
-    }))
+    30*time.Second)
 ```
 
 </td>
@@ -927,8 +915,8 @@ func (h *OrderHandler) Handle(
             cmd.GetID(), cmd.GetCorrelationID(), orderID)
     }
     
-    return h.publisher.PublishReply(
-        ctx, reply, cmd.ReplyTo)
+    return h.publisher.Publish(ctx, reply,
+        messaging.WithRoutingKey(cmd.ReplyTo))
 }
 
 // Client error handling
@@ -1051,28 +1039,43 @@ var reply = await bridge.SendAndWaitAsync<PriceReply>(
 <td>
 
 ```go
-// Configure caching
-cache := redis.NewCache(redisClient)
-bridge := bridge.NewSyncAsyncBridge(
-    publisher, subscriber, logger,
-    bridge.WithCache(cache),
-    bridge.WithDefaultCacheDuration(5*time.Minute))
+// Note: Response caching is not currently implemented
+// in the Go version of the bridge.
+// 
+// For caching, implement at the handler level:
 
-// Use with caching
-reply, err := bridge.SendAndWait(ctx,
-    query,
-    "qry.pricing.get",
-    10*time.Second,
-    bridge.WithCaching(10*time.Minute),
-    bridge.WithCacheKey(
-        fmt.Sprintf("price:%s", query.ProductID)))
+type CachedPriceHandler struct {
+    cache    *redis.Client
+    catalog  PriceCatalog
+    ttl      time.Duration
+}
 
-// Bypass cache
-reply, err := bridge.SendAndWait(ctx,
-    query,
-    "qry.pricing.get",
-    10*time.Second,
-    bridge.BypassCache())
+func (h *CachedPriceHandler) Handle(
+    ctx context.Context,
+    msg contracts.Message) error {
+    
+    query := msg.(*GetPriceQuery)
+    cacheKey := fmt.Sprintf("price:%s", query.ProductID)
+    
+    // Try cache first
+    cached, err := h.cache.Get(ctx, cacheKey).Result()
+    if err == nil {
+        // Return cached response
+        // ... deserialize and return
+    }
+    
+    // Cache miss - get from catalog
+    price, err := h.catalog.GetPrice(ctx, query.ProductID)
+    if err != nil {
+        return err
+    }
+    
+    // Cache the result
+    h.cache.Set(ctx, cacheKey, price, h.ttl)
+    
+    // Return response
+    // ...
+}
 ```
 
 </td>

@@ -235,21 +235,7 @@ func main() {
 ### 1. Request-Reply Pattern
 
 ```go
-import (
-    "time"
-    "github.com/glimte/mmate-go/bridge"
-)
-
-// Create a bridge for request-reply patterns
-bridge, err := bridge.NewSyncAsyncBridge(
-    client.Publisher(), 
-    client.Subscriber(), 
-    logger,
-)
-if err != nil {
-    log.Fatal(err)
-}
-
+// The bridge is already integrated in the client
 // Send command and wait for reply
 command := &ProcessOrderCommand{
     BaseCommand: contracts.BaseCommand{
@@ -258,7 +244,7 @@ command := &ProcessOrderCommand{
     OrderID: "order-123",
 }
 
-reply, err := bridge.SendAndWait(ctx, command, "cmd.order.process", 30*time.Second)
+reply, err := client.Bridge().SendAndWait(ctx, command, "cmd.order.process", 30*time.Second)
 if err != nil {
     log.Printf("Request failed: %v", err)
     return
@@ -277,8 +263,12 @@ events := []contracts.Event{
     &OrderConfirmedEvent{...},
 }
 
+publisher := client.Publisher()
 for _, event := range events {
-    if err := client.PublishEvent(ctx, event); err != nil {
+    err := publisher.Publish(ctx, event,
+        messaging.WithExchange("mmate.events"),
+        messaging.WithRoutingKey("event.order."+event.GetType()))
+    if err != nil {
         log.Printf("Failed to publish event: %v", err)
         return
     }
@@ -300,21 +290,31 @@ err = group.Subscribe(ctx, "cmd.order.process", handler)
 
 ## Configuration Options
 
-### Connection Options
+### Client Options
 ```go
-connManager := rabbitmq.NewConnectionManager(amqpURL,
-    rabbitmq.WithLogger(logger),
-    rabbitmq.WithReconnectDelay(5*time.Second),
-    rabbitmq.WithHeartbeat(30*time.Second),
+// Configure the client with various options
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithLogger(logger),
+    mmate.WithFIFOMode(true),
+    mmate.WithQueueBindings(
+        messaging.QueueBinding{
+            Exchange:   "mmate.events",
+            RoutingKey: "orders.*",
+        },
+    ),
 )
-```
 
-### Publisher Options
-```go
-publisher := rabbitmq.NewPublisher(channelPool,
-    rabbitmq.WithConfirmMode(true),
-    rabbitmq.WithPublisherLogger(logger),
+// Enable FIFO (First-In-First-Out) message ordering
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithFIFOMode(true), // Ensures message ordering
 )
+
+// Service queue is automatically created as "{serviceName}-queue"
+// For example, if service name is "order-processor", 
+// the queue will be "order-processor-queue"
+fmt.Printf("Service queue: %s\n", client.ServiceQueue())
 ```
 
 ### Subscriber Options
@@ -330,6 +330,7 @@ subscriber.Subscribe(ctx, queue, messageType, handler,
 
 ### Retry with Exponential Backoff
 ```go
+// Configure retry policy at client level
 retryPolicy := reliability.NewExponentialBackoff(
     100*time.Millisecond, // initial delay
     5*time.Second,        // max delay
@@ -337,49 +338,115 @@ retryPolicy := reliability.NewExponentialBackoff(
     3,                    // max attempts
 )
 
-// Use with bridge
-bridge, err := bridge.NewSyncAsyncBridge(publisher, subscriber, logger,
-    bridge.WithRetryPolicy(retryPolicy),
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithRetryPolicy(retryPolicy),
+)
+
+// Or use default retry configuration
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithDefaultRetry(),
 )
 ```
 
 ### Circuit Breaker
 ```go
-breaker := reliability.NewCircuitBreaker(
+// Configure circuit breaker at client level
+circuitBreaker := reliability.NewCircuitBreaker(
     reliability.WithFailureThreshold(5),
+    reliability.WithSuccessThreshold(2),
     reliability.WithTimeout(30*time.Second),
 )
 
-// Wrap operations
-err := breaker.Execute(ctx, func() error {
-    return publisher.PublishEvent(ctx, event)
-})
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithCircuitBreaker(circuitBreaker),
+)
 ```
 
 ## Monitoring
 
 ### Health Checks
 ```go
-registry := health.NewRegistry()
-registry.Register(health.NewRabbitMQChecker(connManager, logger))
-registry.Register(health.NewQueueChecker("my-queue", channelPool, logger))
+// Service-scoped health monitoring
+health, err := client.GetServiceHealth(ctx)
+if err != nil {
+    log.Printf("Health check failed: %v", err)
+}
 
-// Check health
-status := registry.Check(ctx)
-if status.Status != health.StatusHealthy {
-    log.Printf("System unhealthy: %v", status)
+// Get service metrics
+metrics, err := client.GetServiceMetrics(ctx)
+summary := client.GetMetricsSummary()
+
+// Create service monitor for advanced monitoring
+monitor, err := client.NewServiceMonitor()
+if err != nil {
+    log.Printf("Failed to create monitor: %v", err)
 }
 ```
 
 ### Metrics
 ```go
-// Use interceptors for metrics
-chain := interceptors.NewChain(
-    interceptors.Metrics(metricsCollector),
-    interceptors.Logging(logger),
+// Use default metrics
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithDefaultMetrics(),
 )
 
-publisher = publisher.WithInterceptor(chain)
+// Or provide custom metrics collector
+customCollector := &MyMetricsCollector{}
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithMetrics(customCollector),
+)
+```
+
+## Interceptors
+
+### Configure Interceptor Pipeline
+```go
+// Create interceptor pipeline
+pipeline := interceptors.NewPipeline()
+pipeline.Add(interceptors.NewLoggingInterceptor(logger))
+pipeline.Add(interceptors.NewMetricsInterceptor(metrics))
+pipeline.Add(interceptors.NewValidationInterceptor())
+
+// Configure client with interceptors
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithInterceptors(pipeline),
+)
+
+// Or configure separate pipelines for publish/subscribe
+publishPipeline := interceptors.NewPipeline().
+    Add(interceptors.NewLoggingInterceptor(logger))
+
+subscribePipeline := interceptors.NewPipeline().
+    Add(interceptors.NewValidationInterceptor()).
+    Add(interceptors.NewMetricsInterceptor(metrics))
+
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithPublishInterceptors(publishPipeline),
+    mmate.WithSubscribeInterceptors(subscribePipeline),
+)
+```
+
+## Dead Letter Queue (DLQ) Handling
+
+```go
+// Configure DLQ handler
+dlqHandler := reliability.NewDLQHandler(
+    reliability.WithMaxRetries(3),
+    reliability.WithDLQExchange("mmate.dlx"),
+    reliability.WithRetryDelay(5*time.Second),
+)
+
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithServiceName("my-service"),
+    mmate.WithDLQHandler(dlqHandler),
+)
 ```
 
 ## Testing

@@ -133,7 +133,31 @@ func NewClientWithOptions(connectionString string, options ...ClientOption) (*Cl
 // Client options
 type ClientOption func(*clientConfig)
 
+// Logging options
 func WithLogger(logger *slog.Logger) ClientOption
+func WithDefaultLogger() ClientOption
+
+// Service configuration
+func WithServiceName(name string) ClientOption
+func WithFIFOMode(enabled bool) ClientOption
+
+// Queue configuration
+func WithQueueBindings(bindings ...messaging.QueueBinding) ClientOption
+
+// Interceptor configuration
+func WithInterceptors(pipeline *interceptors.Pipeline) ClientOption
+func WithPublishInterceptors(pipeline *interceptors.Pipeline) ClientOption
+func WithSubscribeInterceptors(pipeline *interceptors.Pipeline) ClientOption
+
+// Reliability configuration
+func WithRetryPolicy(policy reliability.RetryPolicy) ClientOption
+func WithDefaultRetry() ClientOption
+func WithCircuitBreaker(cb *reliability.CircuitBreaker) ClientOption
+func WithDLQHandler(handler *reliability.DLQHandler) ClientOption
+
+// Metrics configuration
+func WithMetrics(collector interceptors.MetricsCollector) ClientOption
+func WithDefaultMetrics() ClientOption
 ```
 
 ### Client Methods
@@ -143,19 +167,26 @@ type Client struct {
     // ... internal fields
 }
 
-// Get the message publisher
+// Core components
 func (c *Client) Publisher() *MessagePublisher
-
-// Get the message subscriber
 func (c *Client) Subscriber() *MessageSubscriber
-
-// Get the message dispatcher
 func (c *Client) Dispatcher() *MessageDispatcher
-
-// Get the underlying transport
+func (c *Client) Bridge() *bridge.SyncAsyncBridge
 func (c *Client) Transport() Transport
 
-// Close all resources
+// Service information
+func (c *Client) ServiceQueue() string
+
+// Metrics and monitoring
+func (c *Client) MetricsCollector() interceptors.MetricsCollector
+func (c *Client) GetMetricsSummary() *monitor.MetricsSummary
+func (c *Client) NewServiceMonitor() (*monitor.ServiceMonitor, error)
+func (c *Client) GetServiceMetrics(ctx context.Context) (*monitor.ServiceMetrics, error)
+func (c *Client) GetServiceHealth(ctx context.Context) (*monitor.ServiceHealth, error)
+func (c *Client) GetMyConsumerStats(ctx context.Context) (*monitor.ConsumerStats, error)
+func (c *Client) GetAdvancedMetrics() *monitor.AdvancedMetricsReport
+
+// Resource management
 func (c *Client) Close() error
 ```
 
@@ -171,11 +202,8 @@ type MessagePublisher struct {
 // Constructor (typically accessed via Client.Publisher())
 func NewMessagePublisher(transport TransportPublisher, opts ...PublisherOption) *MessagePublisher
 
-// Publishing methods
-func (p *MessagePublisher) Publish(ctx context.Context, msg Message, options ...PublishOption) error
-func (p *MessagePublisher) PublishCommand(ctx context.Context, cmd Command, options ...PublishOption) error
-func (p *MessagePublisher) PublishEvent(ctx context.Context, evt Event, options ...PublishOption) error
-func (p *MessagePublisher) PublishReply(ctx context.Context, reply Reply, replyTo string, options ...PublishOption) error
+// Publishing method
+func (p *MessagePublisher) Publish(ctx context.Context, msg contracts.Message, options ...PublishOption) error
 
 // Publisher options
 type PublisherOption func(*MessagePublisher)
@@ -415,33 +443,19 @@ func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, instanceID string) 
 
 ### SyncAsyncBridge
 
+The SyncAsyncBridge is integrated into the Client and accessed via `client.Bridge()`.
+
 ```go
-type SyncAsyncBridge struct {
-    publisher  Publisher
-    subscriber Subscriber
-    replyStore ReplyStore
-    options    BridgeOptions
-}
+// Access the bridge
+bridge := client.Bridge()
 
-// Constructor
-func NewSyncAsyncBridge(publisher Publisher, subscriber Subscriber,
-    logger *slog.Logger, opts ...BridgeOption) (*SyncAsyncBridge, error)
+// Main method
+func (b *SyncAsyncBridge) SendAndWait(ctx context.Context, msg contracts.Message, 
+    routingKey string, timeout time.Duration) (contracts.Reply, error)
 
-// Methods
-func (b *SyncAsyncBridge) SendAndWait(ctx context.Context, msg Message, 
-    routingKey string, timeout time.Duration) (Reply, error)
-func (b *SyncAsyncBridge) RequestCommand(ctx context.Context, cmd Command, 
-    timeout time.Duration) (Reply, error)
-func (b *SyncAsyncBridge) RequestQuery(ctx context.Context, qry Query, 
-    timeout time.Duration) (Reply, error)
-func (b *SyncAsyncBridge) Close() error
-
-// Options
-type BridgeOption func(*BridgeOptions)
-
-func WithReplyTimeout(timeout time.Duration) BridgeOption
-func WithReplyQueue(queue string) BridgeOption
-func WithConcurrentRequests(limit int) BridgeOption
+// Bridge lifecycle (managed internally by client)
+func (b *SyncAsyncBridge) Start(replyQueue string) error
+func (b *SyncAsyncBridge) Stop() error
 ```
 
 ### ReplyStore Interface
@@ -480,6 +494,7 @@ func NewPipeline(interceptors ...Interceptor) *Pipeline
 
 // Methods
 func (p *Pipeline) Add(interceptor Interceptor) *Pipeline
+func (p *Pipeline) Use(interceptor Interceptor) *Pipeline  // Alias for Add
 func (p *Pipeline) Execute(ctx context.Context, msg Message, handler Handler) error
 ```
 
@@ -513,9 +528,99 @@ type RetryInterceptor struct {
 func NewRetryInterceptor(policy RetryPolicy) *RetryInterceptor
 ```
 
+### MetricsCollector Interface
+
+```go
+type MetricsCollector interface {
+    RecordMessageSent(messageType string, exchange string, routingKey string)
+    RecordMessageReceived(messageType string, queue string)
+    RecordProcessingDuration(messageType string, duration time.Duration)
+    RecordError(messageType string, errorType string)
+}
+```
+
+## Reliability
+
+### DLQHandler
+
+```go
+type DLQHandler struct {
+    maxRetries        int
+    dlqExchange       string
+    dlqRoutingPrefix  string
+    retryDelay        time.Duration
+    logger            *slog.Logger
+}
+
+// Constructor
+func NewDLQHandler(options ...DLQOption) *DLQHandler
+
+// DLQ Options
+type DLQOption func(*DLQHandler)
+
+func WithMaxRetries(retries int) DLQOption
+func WithDLQExchange(exchange string) DLQOption
+func WithDLQRoutingPrefix(prefix string) DLQOption
+func WithRetryDelay(delay time.Duration) DLQOption
+func WithDLQLogger(logger *slog.Logger) DLQOption
+```
+
 ## Monitoring
 
-### MonitorClient
+### Service-Scoped Monitoring Types
+
+```go
+// ServiceMonitor monitors a specific service's health and metrics
+type ServiceMonitor struct {
+    serviceName    string
+    serviceQueue   string
+    queueInspector *QueueInspector
+}
+
+// ServiceHealth represents the health status of a service
+type ServiceHealth struct {
+    Status           string                     `json:"status"`
+    ServiceName      string                     `json:"serviceName"`
+    QueueHealth      QueueHealth               `json:"queueHealth"`
+    ConnectionHealth BasicConnectivityHealth   `json:"connectionHealth"`
+    Timestamp        time.Time                 `json:"timestamp"`
+}
+
+// ServiceMetrics contains metrics for a service
+type ServiceMetrics struct {
+    ServiceName      string           `json:"serviceName"`
+    QueueMetrics     QueueMetrics     `json:"queueMetrics"`
+    MessageMetrics   MessageMetrics   `json:"messageMetrics"`
+    ErrorRate        float64          `json:"errorRate"`
+    Timestamp        time.Time        `json:"timestamp"`
+}
+
+// ConsumerStats tracks consumer-specific statistics
+type ConsumerStats struct {
+    ServiceName        string           `json:"serviceName"`
+    ConsumerTag        string           `json:"consumerTag"`
+    MessageRate        float64          `json:"messageRate"`
+    ProcessingTime     time.Duration    `json:"processingTime"`
+    LastMessageTime    time.Time        `json:"lastMessageTime"`
+}
+
+// QueueInspector provides queue inspection using AMQP
+type QueueInspector struct {
+    channelPool *rabbitmq.ChannelPool
+    vhost       string
+}
+
+func (qi *QueueInspector) InspectQueue(ctx context.Context, queueName string) (*QueueInfo, error)
+
+// BasicConnectivityHealth represents basic connection health
+type BasicConnectivityHealth struct {
+    Connected        bool      `json:"connected"`
+    LastError        string    `json:"lastError,omitempty"`
+    LastChecked      time.Time `json:"lastChecked"`
+}
+```
+
+### MonitorClient (Deprecated)
 
 ```go
 type MonitorClient struct {
