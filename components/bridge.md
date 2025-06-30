@@ -76,47 +76,73 @@ Console.WriteLine($"Total price: {result.TotalPrice}");
 
 ```go
 // Create bridge
-bridge := bridge.NewSyncAsyncBridge(
-    publisher, subscriber, logger)
+bridgeClient := bridge.NewSyncAsyncBridge(
+    publisher, subscriber,
+    bridge.WithReplyQueue("my-service-reply"))
 
 // Send command and wait for reply
-reply, err := bridge.SendAndWait(ctx,
+reply, err := bridgeClient.RequestCommand(ctx,
     &CreateOrderCommand{
-        BaseCommand: contracts.NewBaseCommand(
-            "CreateOrderCommand"),
+        BaseCommand: contracts.BaseCommand{
+            BaseMessage: contracts.BaseMessage{
+                Type: "CreateOrderCommand",
+                ID:   uuid.New().String(),
+                Timestamp: time.Now(),
+            },
+            TargetService: "order-service",
+        },
         CustomerID: "CUST-123",
         Items:     orderItems,
     },
-    "cmd.orders.create",
     30*time.Second)
 
 if err != nil {
     return err
 }
 
-orderReply := reply.(*OrderReply)
+// Type assertion required
+orderReply, ok := reply.(*OrderReply)
+if !ok {
+    return fmt.Errorf("unexpected reply type")
+}
+
 if orderReply.Success {
-    fmt.Printf("Order created: %s\n", 
-        orderReply.OrderID)
+    fmt.Printf("Order created: %s\n", orderReply.OrderID)
 } else {
-    fmt.Printf("Failed: %s\n", 
-        orderReply.Error)
+    fmt.Printf("Failed: %s\n", orderReply.Error)
 }
 
 // Send query
-result, err := bridge.SendAndWait(ctx,
+result, err := bridgeClient.RequestQuery(ctx,
     &GetPriceQuery{
-        BaseQuery: contracts.NewBaseQuery(
-            "GetPriceQuery"),
+        BaseQuery: contracts.BaseQuery{
+            BaseMessage: contracts.BaseMessage{
+                Type: "GetPriceQuery",
+                ID:   uuid.New().String(),
+                Timestamp: time.Now(),
+            },
+        },
         ProductID: "PROD-456",
         Quantity:  5,
     },
-    "qry.pricing.get",
     10*time.Second)
 
+if err != nil {
+    return err
+}
+
 priceReply := result.(*PriceReply)
-fmt.Printf("Total price: %.2f\n", 
-    priceReply.TotalPrice)
+fmt.Printf("Total price: %.2f\n", priceReply.TotalPrice)
+
+// NEW: Type-safe helpers (available since v0.2.0)
+// Eliminates type assertions
+orderReply, err := bridge.RequestCommandTyped[*OrderReply](
+    bridgeClient, ctx, cmd, 30*time.Second)
+// No type assertion needed!
+
+priceReply, err := bridge.RequestQueryTyped[*PriceReply](
+    bridgeClient, ctx, query, 10*time.Second)
+// Direct typed access
 ```
 
 </td>
@@ -214,32 +240,42 @@ func (h *CreateOrderHandler) Handle(
     orderID, err := h.orderService.CreateOrder(
         ctx, cmd)
     
-    var reply contracts.Reply
+    var reply *OrderReply
     if err != nil {
+        reply = &OrderReply{
+            BaseReply: contracts.BaseReply{
+                BaseMessage: contracts.BaseMessage{
+                    Type:          "OrderReply",
+                    ID:            uuid.New().String(),
+                    Timestamp:     time.Now(),
+                    CorrelationID: cmd.GetCorrelationID(),
+                },
+                Success: false,
+            },
+            Error: err.Error(),
+        }
+        
         var validationErr *ValidationError
         if errors.As(err, &validationErr) {
-            reply = &OrderReply{
-                BaseReply: contracts.NewBaseReply(
-                    cmd.GetID(), 
-                    cmd.GetCorrelationID()),
-                Success:          false,
-                Error:           err.Error(),
-                ValidationErrors: validationErr.Errors,
-            }
-        } else {
-            return err
+            reply.ValidationErrors = validationErr.Errors
         }
     } else {
         reply = &OrderReply{
-            BaseReply: contracts.NewBaseReply(
-                cmd.GetID(), 
-                cmd.GetCorrelationID()),
-            Success: true,
+            BaseReply: contracts.BaseReply{
+                BaseMessage: contracts.BaseMessage{
+                    Type:          "OrderReply",
+                    ID:            uuid.New().String(),
+                    Timestamp:     time.Now(),
+                    CorrelationID: cmd.GetCorrelationID(),
+                },
+                Success: true,
+            },
             OrderID: orderID,
             Message: "Order created successfully",
         }
     }
     
+    // IMPORTANT: Must use PublishReply for direct queue routing
     return h.publisher.PublishReply(
         ctx, reply, cmd.ReplyTo)
 }
@@ -266,9 +302,14 @@ func (h *GetPriceHandler) Handle(
     discount := h.calculateDiscount(query.Quantity)
     
     reply := &PriceReply{
-        BaseReply: contracts.NewBaseReply(
-            query.GetID(),
-            query.GetCorrelationID()),
+        BaseReply: contracts.BaseReply{
+            BaseMessage: contracts.BaseMessage{
+                Type:          "PriceReply",
+                ID:            uuid.New().String(),
+                Timestamp:     time.Now(),
+                CorrelationID: query.GetCorrelationID(),
+            },
+        },
         UnitPrice:  price,
         Quantity:   query.Quantity,
         TotalPrice: total,
@@ -276,6 +317,7 @@ func (h *GetPriceHandler) Handle(
         FinalPrice: total - discount,
     }
     
+    // IMPORTANT: Must use PublishReply for direct queue routing
     return h.publisher.PublishReply(
         ctx, reply, query.ReplyTo)
 }
@@ -287,108 +329,29 @@ func (h *GetPriceHandler) Handle(
 
 ## Advanced Features
 
-### Batch Operations
+### Type-Safe Bridge Operations (Go)
 
-Process multiple requests concurrently:
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-// Batch requests
-var requests = products.Select(p => 
-    new GetPriceQuery 
-    { 
-        ProductId = p.Id,
-        Quantity = p.Quantity
-    }).ToList();
-
-// Send all requests concurrently
-var tasks = requests.Select(req =>
-    bridge.SendAndWaitAsync<PriceReply>(
-        req, TimeSpan.FromSeconds(10)));
-
-// Wait for all responses
-var replies = await Task.WhenAll(tasks);
-
-// Process results
-var totalAmount = replies
-    .Where(r => r.Success)
-    .Sum(r => r.FinalPrice);
-
-// With cancellation
-using var cts = new CancellationTokenSource(
-    TimeSpan.FromSeconds(30));
-
-var replies = await bridge
-    .SendBatchAsync<GetPriceQuery, PriceReply>(
-        requests,
-        timeout: TimeSpan.FromSeconds(10),
-        cancellationToken: cts.Token);
-```
-
-</td>
-<td>
+Since v0.2.0, Go provides type-safe helper functions that eliminate runtime type assertions:
 
 ```go
-// Batch requests
-var requests []contracts.Message
-for _, p := range products {
-    requests = append(requests, &GetPriceQuery{
-        BaseQuery: contracts.NewBaseQuery(
-            "GetPriceQuery"),
-        ProductID: p.ID,
-        Quantity:  p.Quantity,
-    })
+// Traditional approach with type assertion
+reply, err := bridge.RequestCommand(ctx, cmd, timeout)
+orderReply, ok := reply.(*OrderReply)
+if !ok {
+    return fmt.Errorf("unexpected reply type")
 }
 
-// Send all requests concurrently
-g, ctx := errgroup.WithContext(ctx)
-replies := make([]contracts.Reply, len(requests))
+// New type-safe approach
+orderReply, err := bridge.RequestCommandTyped[*OrderReply](
+    bridge, ctx, cmd, timeout)
+// Direct typed access - no assertion needed!
 
-for i, req := range requests {
-    i, req := i, req // capture
-    g.Go(func() error {
-        reply, err := bridge.SendAndWait(
-            ctx, req, "qry.pricing.get",
-            10*time.Second)
-        if err != nil {
-            return err
-        }
-        replies[i] = reply
-        return nil
-    })
-}
-
-// Wait for all responses
-if err := g.Wait(); err != nil {
-    return err
-}
-
-// Process results
-var totalAmount float64
-for _, r := range replies {
-    if priceReply, ok := r.(*PriceReply); ok {
-        if priceReply.Success {
-            totalAmount += priceReply.FinalPrice
-        }
-    }
-}
-
-// Note: Batch helper is not currently implemented
-// Use goroutines and errgroup for concurrent requests as shown above
+// Works for queries too
+priceReply, err := bridge.RequestQueryTyped[*PriceReply](
+    bridge, ctx, query, timeout)
 ```
 
-</td>
-</tr>
-</table>
-
-### Retry and Circuit Breaking
+### Configuration Options
 
 <table>
 <tr>
@@ -399,49 +362,38 @@ for _, r := range replies {
 <td>
 
 ```csharp
-// Configure retry policy
+// Configure bridge
 var bridge = new SyncAsyncBridge(
     publisher, subscriber, logger,
     options =>
     {
-        options.RetryPolicy = new ExponentialBackoffRetry
-        {
-            MaxAttempts = 3,
-            InitialDelay = TimeSpan.FromSeconds(1),
-            MaxDelay = TimeSpan.FromSeconds(10)
-        };
-        
-        options.CircuitBreaker = new CircuitBreakerOptions
-        {
-            FailureThreshold = 5,
-            ResetTimeout = TimeSpan.FromMinutes(1),
-            HalfOpenAttempts = 3
-        };
+        options.ReplyQueue = "my-service-reply";
+        options.CleanupInterval = TimeSpan.FromMinutes(1);
+        options.MaxPendingRequests = 1000;
+        options.DefaultTimeout = TimeSpan.FromSeconds(30);
     });
-
-// Use with specific retry policy
-var reply = await bridge.SendAndWaitAsync<OrderReply>(
-    command,
-    options => options
-        .WithTimeout(TimeSpan.FromSeconds(30))
-        .WithRetryPolicy(new FixedDelayRetry
-        {
-            MaxAttempts = 5,
-            Delay = TimeSpan.FromSeconds(2)
-        })
-        .OnRetry((attempt, delay) =>
-        {
-            logger.LogWarning(
-                "Retry {Attempt} after {Delay}ms",
-                attempt, delay.TotalMilliseconds);
-        }));
 ```
 
 </td>
 <td>
 
 ```go
-// Retry and circuit breaker are configured at client level
+// Configure bridge
+bridge := bridge.NewSyncAsyncBridge(
+    publisher, subscriber,
+    bridge.WithReplyQueue("my-service-reply"),
+    bridge.WithCleanupInterval(time.Minute),
+    bridge.WithMaxPendingRequests(1000),
+    bridge.WithDefaultTimeout(30*time.Second),
+    bridge.WithBridgeLogger(logger))
+
+// Circuit breaker (configured at client level)
+circuitBreaker := reliability.NewCircuitBreaker(
+    reliability.WithFailureThreshold(5),
+    reliability.WithTimeout(time.Minute),
+    reliability.WithSuccessThreshold(2))
+
+// Retry policy (configured at client level)
 retryPolicy := reliability.NewExponentialBackoff(
     time.Second,      // initial delay
     10*time.Second,   // max delay
@@ -449,252 +401,19 @@ retryPolicy := reliability.NewExponentialBackoff(
     3,                // max attempts
 )
 
-circuitBreaker := reliability.NewCircuitBreaker(
-    reliability.WithFailureThreshold(5),
-    reliability.WithTimeout(time.Minute),
-    reliability.WithSuccessThreshold(2))
-
-client, err := mmate.NewClientWithOptions(connectionString,
-    mmate.WithServiceName("my-service"),
-    mmate.WithRetryPolicy(retryPolicy),
-    mmate.WithCircuitBreaker(circuitBreaker))
-
-// Bridge is accessed via client
-reply, err := client.Bridge().SendAndWait(ctx,
-    command,
-    "cmd.orders.create",
-    30*time.Second)
+bridge := bridge.NewSyncAsyncBridge(
+    publisher, subscriber,
+    bridge.WithBridgeCircuitBreaker(circuitBreaker),
+    bridge.WithBridgeRetryPolicy(retryPolicy))
 ```
 
 </td>
 </tr>
 </table>
 
-### Streaming Responses
+### Error Handling
 
-Handle large result sets with streaming:
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-// Stream results
-public async IAsyncEnumerable<OrderDto> 
-    SearchOrdersAsync(
-        SearchOrdersQuery query,
-        [EnumeratorCancellation] 
-        CancellationToken ct = default)
-{
-    var pageSize = 100;
-    var page = 1;
-    
-    while (!ct.IsCancellationRequested)
-    {
-        var pagedQuery = query with
-        {
-            Page = page,
-            PageSize = pageSize
-        };
-        
-        var reply = await bridge
-            .SendAndWaitAsync<SearchOrdersReply>(
-                pagedQuery,
-                timeout: TimeSpan.FromSeconds(30),
-                cancellationToken: ct);
-        
-        foreach (var order in reply.Orders)
-        {
-            yield return order;
-        }
-        
-        if (!reply.HasMore)
-            break;
-            
-        page++;
-    }
-}
-
-// Consume stream
-await foreach (var order in SearchOrdersAsync(query))
-{
-    await ProcessOrder(order);
-}
-```
-
-</td>
-<td>
-
-```go
-// Stream results
-func (b *Bridge) StreamOrders(
-    ctx context.Context,
-    query *SearchOrdersQuery) (<-chan *OrderDto, error) {
-    
-    orders := make(chan *OrderDto)
-    
-    go func() {
-        defer close(orders)
-        
-        pageSize := 100
-        page := 1
-        
-        for {
-            select {
-            case <-ctx.Done():
-                return
-            default:
-            }
-            
-            pagedQuery := &SearchOrdersQuery{
-                BaseQuery: query.BaseQuery,
-                Filter:    query.Filter,
-                Page:      page,
-                PageSize:  pageSize,
-            }
-            
-            reply, err := b.SendAndWait(ctx,
-                pagedQuery,
-                "qry.orders.search",
-                30*time.Second)
-            if err != nil {
-                return
-            }
-            
-            searchReply := reply.(*SearchOrdersReply)
-            for _, order := range searchReply.Orders {
-                select {
-                case orders <- order:
-                case <-ctx.Done():
-                    return
-                }
-            }
-            
-            if !searchReply.HasMore {
-                return
-            }
-            
-            page++
-        }
-    }()
-    
-    return orders, nil
-}
-
-// Consume stream
-orders, err := bridge.StreamOrders(ctx, query)
-if err != nil {
-    return err
-}
-
-for order := range orders {
-    if err := processOrder(order); err != nil {
-        return err
-    }
-}
-```
-
-</td>
-</tr>
-</table>
-
-### Request Context
-
-Pass additional context with requests:
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-// Send with context
-var reply = await bridge.SendAndWaitAsync<OrderReply>(
-    command,
-    options => options
-        .WithHeader("userId", currentUser.Id)
-        .WithHeader("tenantId", tenant.Id)
-        .WithHeader("source", "web-api")
-        .WithTraceContext(Activity.Current));
-
-// Access in handler
-public class OrderHandler : 
-    IRequestHandler<CreateOrderCommand, OrderReply>
-{
-    public async Task<OrderReply> HandleAsync(
-        CreateOrderCommand command,
-        RequestContext context)
-    {
-        var userId = context.Headers["userId"];
-        var tenantId = context.Headers["tenantId"];
-        var traceId = context.TraceContext?.TraceId;
-        
-        logger.LogInformation(
-            "Processing order for user {UserId} " +
-            "in tenant {TenantId}",
-            userId, tenantId);
-        
-        // Process with context...
-    }
-}
-```
-
-</td>
-<td>
-
-```go
-// Send with context
-ctx = metadata.AppendToOutgoingContext(ctx,
-    "userId", currentUser.ID,
-    "tenantId", tenant.ID,
-    "source", "web-api")
-
-reply, err := bridge.SendAndWait(ctx,
-    command,
-    "cmd.orders.create",
-    30*time.Second,
-    bridge.WithHeaders(map[string]string{
-        "userId":   currentUser.ID,
-        "tenantId": tenant.ID,
-        "source":   "web-api",
-    }))
-
-// Access in handler
-func (h *OrderHandler) Handle(
-    ctx context.Context,
-    msg contracts.Message) error {
-    
-    cmd := msg.(*CreateOrderCommand)
-    
-    userID := msg.GetHeader("userId")
-    tenantID := msg.GetHeader("tenantId")
-    
-    span := trace.SpanFromContext(ctx)
-    traceID := span.SpanContext().TraceID()
-    
-    h.logger.Info("Processing order",
-        "userId", userID,
-        "tenantId", tenantID,
-        "traceId", traceID)
-    
-    // Process with context...
-}
-```
-
-</td>
-</tr>
-</table>
-
-## Error Handling
-
-### Timeout Handling
+#### Timeout Handling
 
 <table>
 <tr>
@@ -726,361 +445,66 @@ catch (BridgeException ex)
         "Bridge error: {Error}",
         ex.Message);
 }
-
-// With custom timeout handling
-var reply = await bridge.SendAndWaitAsync<OrderReply>(
-    command,
-    options => options
-        .WithTimeout(TimeSpan.FromSeconds(30))
-        .OnTimeout(async () =>
-        {
-            // Log timeout
-            await metrics.RecordTimeout("CreateOrder");
-            
-            // Try fallback
-            return new OrderReply
-            {
-                Success = false,
-                Error = "Service temporarily unavailable"
-            };
-        }));
 ```
 
 </td>
 <td>
 
 ```go
-reply, err := bridge.SendAndWait(ctx,
-    command,
-    "cmd.orders.create",
-    30*time.Second)
+reply, err := bridge.RequestCommand(ctx,
+    command, 30*time.Second)
 
 if err != nil {
-    var timeoutErr *bridge.TimeoutError
-    if errors.As(err, &timeoutErr) {
+    if errors.Is(err, context.DeadlineExceeded) {
         logger.Error("Request timed out",
-            "timeout", timeoutErr.Timeout,
-            "correlationId", timeoutErr.CorrelationID)
+            "timeout", "30s")
         
         // Handle timeout - maybe try alternative
         return fallbackService.ProcessOrder(ctx, command)
     }
     
-    var bridgeErr *bridge.BridgeError
-    if errors.As(err, &bridgeErr) {
-        logger.Error("Bridge error",
-            "error", bridgeErr.Error())
-    }
-    
-    return err
+    return fmt.Errorf("bridge request failed: %w", err)
 }
-
-// With custom timeout handling
-reply, err := bridge.SendAndWait(ctx,
-    command,
-    "cmd.orders.create", 
-    30*time.Second,
-    bridge.WithTimeoutHandler(
-        func(ctx context.Context) (contracts.Reply, error) {
-            // Log timeout
-            metrics.RecordTimeout("CreateOrder")
-            
-            // Return fallback response
-            return &OrderReply{
-                BaseReply: contracts.NewBaseReply(
-                    command.GetID(),
-                    command.GetCorrelationID()),
-                Success: false,
-                Error:   "Service temporarily unavailable",
-            }, nil
-        }))
 ```
 
 </td>
 </tr>
 </table>
 
-### Error Propagation
+## Implementation Details
 
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
+### Go: Key Differences from Documentation
 
-```csharp
-// Handler with error details
-public class OrderHandler : 
-    IRequestHandler<CreateOrderCommand, OrderReply>
-{
-    public async Task<OrderReply> HandleAsync(
-        CreateOrderCommand command,
-        RequestContext context)
-    {
-        try
-        {
-            var orderId = await orderService
-                .CreateOrder(command);
-            return OrderReply.Success(orderId);
-        }
-        catch (ValidationException ex)
-        {
-            return OrderReply.ValidationError(
-                ex.Message,
-                ex.Errors);
-        }
-        catch (BusinessException ex)
-        {
-            return OrderReply.BusinessError(
-                ex.Code,
-                ex.Message);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Unexpected error");
-            return OrderReply.SystemError(
-                "An error occurred processing your request");
-        }
-    }
-}
+1. **No routing key parameter**: The actual implementation doesn't use routing keys in `RequestCommand`/`RequestQuery`
+2. **ReplyTo field is set automatically**: Using reflection to set the ReplyTo field on commands/queries
+3. **Must use PublishReply**: Handlers must use `publisher.PublishReply(ctx, reply, cmd.ReplyTo)` with empty exchange for direct queue routing
+4. **Type-safe helpers are functions**: Due to Go's lack of generic methods, type-safe helpers are package-level functions
 
-// Client error handling
-var reply = await bridge.SendAndWaitAsync<OrderReply>(
-    command);
+### Message Structure Requirements
 
-switch (reply.ErrorType)
-{
-    case ErrorType.Validation:
-        ShowValidationErrors(reply.ValidationErrors);
-        break;
-    case ErrorType.Business:
-        ShowBusinessError(reply.ErrorCode, reply.Error);
-        break;
-    case ErrorType.System:
-        ShowSystemError(reply.Error);
-        break;
-}
-```
-
-</td>
-<td>
+Commands and Queries must embed the appropriate base types:
 
 ```go
-// Handler with error details
-func (h *OrderHandler) Handle(
-    ctx context.Context,
-    msg contracts.Message) error {
-    
-    cmd := msg.(*CreateOrderCommand)
-    
-    orderID, err := h.orderService.CreateOrder(
-        ctx, cmd)
-    
-    var reply *OrderReply
-    if err != nil {
-        baseReply := contracts.NewBaseReply(
-            cmd.GetID(), cmd.GetCorrelationID())
-        
-        var validationErr *ValidationError
-        if errors.As(err, &validationErr) {
-            reply = &OrderReply{
-                BaseReply:        baseReply,
-                Success:          false,
-                ErrorType:        ErrorTypeValidation,
-                Error:           err.Error(),
-                ValidationErrors: validationErr.Errors,
-            }
-        } else if businessErr, ok := err.(*BusinessError); ok {
-            reply = &OrderReply{
-                BaseReply:  baseReply,
-                Success:    false,
-                ErrorType:  ErrorTypeBusiness,
-                ErrorCode:  businessErr.Code,
-                Error:     businessErr.Message,
-            }
-        } else {
-            h.logger.Error("Unexpected error",
-                "error", err)
-            reply = &OrderReply{
-                BaseReply: baseReply,
-                Success:   false,
-                ErrorType: ErrorTypeSystem,
-                Error:    "An error occurred",
-            }
-        }
-    } else {
-        reply = NewOrderSuccessReply(
-            cmd.GetID(), cmd.GetCorrelationID(), orderID)
-    }
-    
-    return h.publisher.Publish(ctx, reply,
-        messaging.WithRoutingKey(cmd.ReplyTo))
+// Command must embed BaseCommand
+type MyCommand struct {
+    contracts.BaseCommand
+    // Your fields...
 }
 
-// Client error handling
-reply, err := bridge.SendAndWait(ctx,
-    command, "cmd.orders.create", 30*time.Second)
-if err != nil {
-    return err
+// Query must embed BaseQuery  
+type MyQuery struct {
+    contracts.BaseQuery
+    // Your fields...
 }
 
-orderReply := reply.(*OrderReply)
-switch orderReply.ErrorType {
-case ErrorTypeValidation:
-    showValidationErrors(orderReply.ValidationErrors)
-case ErrorTypeBusiness:
-    showBusinessError(orderReply.ErrorCode, orderReply.Error)
-case ErrorTypeSystem:
-    showSystemError(orderReply.Error)
+// Reply must embed BaseReply
+type MyReply struct {
+    contracts.BaseReply
+    Success bool   `json:"success"`
+    Error   string `json:"error,omitempty"`
+    // Your fields...
 }
 ```
-
-</td>
-</tr>
-</table>
-
-## Performance Optimization
-
-### Connection Pooling
-
-Reuse connections for better performance:
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-// Configure connection pool
-services.AddMmateBridge(options =>
-{
-    options.ConnectionPool = new ConnectionPoolOptions
-    {
-        MinConnections = 2,
-        MaxConnections = 10,
-        ConnectionLifetime = TimeSpan.FromMinutes(5),
-        IdleTimeout = TimeSpan.FromMinutes(1)
-    };
-    
-    options.ChannelPool = new ChannelPoolOptions
-    {
-        MaxChannelsPerConnection = 10,
-        ChannelIdleTimeout = TimeSpan.FromSeconds(30)
-    };
-});
-```
-
-</td>
-<td>
-
-```go
-// Configure connection pool
-connManager := rabbitmq.NewConnectionManager(url,
-    rabbitmq.WithMinConnections(2),
-    rabbitmq.WithMaxConnections(10),
-    rabbitmq.WithConnectionLifetime(5*time.Minute),
-    rabbitmq.WithIdleTimeout(time.Minute))
-
-channelPool := rabbitmq.NewChannelPool(connManager,
-    rabbitmq.WithMaxChannelsPerConnection(10),
-    rabbitmq.WithChannelIdleTimeout(30*time.Second))
-
-bridge := bridge.NewSyncAsyncBridge(
-    messaging.NewPublisher(channelPool),
-    messaging.NewSubscriber(channelPool),
-    logger)
-```
-
-</td>
-</tr>
-</table>
-
-### Response Caching
-
-Cache frequently requested data:
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-// Configure caching
-services.AddMmateBridge(options =>
-{
-    options.EnableCaching = true;
-    options.CacheProvider = new RedisCacheProvider();
-    options.DefaultCacheDuration = 
-        TimeSpan.FromMinutes(5);
-});
-
-// Use with caching
-var reply = await bridge.SendAndWaitAsync<PriceReply>(
-    query,
-    options => options
-        .WithCaching(TimeSpan.FromMinutes(10))
-        .WithCacheKey($"price:{query.ProductId}"));
-
-// Bypass cache
-var reply = await bridge.SendAndWaitAsync<PriceReply>(
-    query,
-    options => options.BypassCache());
-```
-
-</td>
-<td>
-
-```go
-// Note: Response caching is not currently implemented
-// in the Go version of the bridge.
-// 
-// For caching, implement at the handler level:
-
-type CachedPriceHandler struct {
-    cache    *redis.Client
-    catalog  PriceCatalog
-    ttl      time.Duration
-}
-
-func (h *CachedPriceHandler) Handle(
-    ctx context.Context,
-    msg contracts.Message) error {
-    
-    query := msg.(*GetPriceQuery)
-    cacheKey := fmt.Sprintf("price:%s", query.ProductID)
-    
-    // Try cache first
-    cached, err := h.cache.Get(ctx, cacheKey).Result()
-    if err == nil {
-        // Return cached response
-        // ... deserialize and return
-    }
-    
-    // Cache miss - get from catalog
-    price, err := h.catalog.GetPrice(ctx, query.ProductID)
-    if err != nil {
-        return err
-    }
-    
-    // Cache the result
-    h.cache.Set(ctx, cacheKey, price, h.ttl)
-    
-    // Return response
-    // ...
-}
-```
-
-</td>
-</tr>
-</table>
 
 ## Monitoring
 
@@ -1091,130 +515,55 @@ Key metrics to track:
 - Response time (p50, p95, p99)
 - Timeout rate
 - Error rate
-- Queue depth
-- Active correlations
+- Pending request count
+- Reply queue depth
 
 ### Health Checks
 
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-public class BridgeHealthCheck : IHealthCheck
-{
-    private readonly ISyncAsyncBridge _bridge;
-    
-    public async Task<HealthCheckResult> 
-        CheckHealthAsync(
-            HealthCheckContext context,
-            CancellationToken ct)
-    {
-        try
-        {
-            // Send health check query
-            var reply = await _bridge
-                .SendAndWaitAsync<HealthReply>(
-                    new HealthQuery(),
-                    timeout: TimeSpan.FromSeconds(5),
-                    cancellationToken: ct);
-            
-            return reply.IsHealthy
-                ? HealthCheckResult.Healthy()
-                : HealthCheckResult.Unhealthy(
-                    reply.Message);
-        }
-        catch (TimeoutException)
-        {
-            return HealthCheckResult.Unhealthy(
-                "Health check timed out");
-        }
-    }
-}
-```
-
-</td>
-<td>
-
 ```go
-type BridgeHealthCheck struct {
-    bridge *bridge.SyncAsyncBridge
-}
-
-func (h *BridgeHealthCheck) CheckHealth(
-    ctx context.Context) error {
-    
-    // Send health check query
-    ctx, cancel := context.WithTimeout(
-        ctx, 5*time.Second)
-    defer cancel()
-    
-    reply, err := h.bridge.SendAndWait(ctx,
-        &HealthQuery{
-            BaseQuery: contracts.NewBaseQuery(
-                "HealthQuery"),
-        },
-        "qry.health.check",
-        5*time.Second)
-    
-    if err != nil {
-        var timeoutErr *bridge.TimeoutError
-        if errors.As(err, &timeoutErr) {
-            return errors.New("health check timed out")
-        }
-        return err
-    }
-    
-    healthReply := reply.(*HealthReply)
-    if !healthReply.IsHealthy {
-        return errors.New(healthReply.Message)
-    }
-    
-    return nil
+// Check bridge health
+pendingCount := bridge.GetPendingRequestCount()
+if pendingCount > 900 { // 90% of max
+    logger.Warn("Bridge nearing capacity",
+        "pending", pendingCount,
+        "max", 1000)
 }
 ```
-
-</td>
-</tr>
-</table>
 
 ## Best Practices
 
-1. **Timeout Configuration**
-   - Set realistic timeouts based on expected response times
+1. **Always set appropriate timeouts**
    - Consider network latency and processing time
    - Use shorter timeouts for queries than commands
-   - Implement timeout handlers for graceful degradation
+   - Set timeouts based on SLAs
 
-2. **Error Handling**
-   - Always handle timeout scenarios
-   - Distinguish between transient and permanent failures
-   - Provide meaningful error messages in replies
-   - Log errors with correlation IDs
+2. **Handle all reply types**
+   - Always check Success field in replies
+   - Handle validation errors separately
+   - Log correlation IDs for debugging
 
-3. **Performance**
-   - Use connection pooling
-   - Implement caching for read-heavy operations
-   - Batch requests when possible
-   - Monitor queue depths and response times
+3. **Use PublishReply for responses**
+   - Don't use regular Publish with routing keys
+   - Ensure empty exchange for direct queue routing
+   - Always include correlation ID
 
-4. **Reliability**
-   - Implement circuit breakers for downstream protection
-   - Use retry policies for transient failures
-   - Set up proper monitoring and alerting
-   - Test failure scenarios
+4. **Leverage type-safe helpers (Go)**
+   - Use `RequestCommandTyped` and `RequestQueryTyped`
+   - Eliminates runtime type assertion errors
+   - Better IDE support and compile-time safety
 
-5. **Security**
-   - Validate all incoming requests
-   - Use authentication headers
-   - Implement authorization in handlers
-   - Never expose sensitive data in error messages
+5. **Monitor pending requests**
+   - Track queue depths
+   - Set alerts for high pending counts
+   - Implement circuit breakers for protection
 
 ## Common Use Cases
+
+### API Gateway Pattern
+Convert synchronous HTTP requests to async messages:
+- HTTP endpoints use Bridge for backend calls
+- Maintains REST-like interface
+- Benefits of message queuing
 
 ### Service-to-Service Communication
 Replace HTTP calls with reliable messaging:
@@ -1222,12 +571,6 @@ Replace HTTP calls with reliable messaging:
 - Automatic retries
 - Location transparency
 - Load balancing
-
-### API Gateway Pattern
-Bridge between synchronous HTTP and async messaging:
-- HTTP endpoints call Bridge
-- Maintains REST-like interface
-- Benefits of message queuing
 
 ### Legacy System Integration
 Wrap async systems with synchronous interface:
@@ -1237,7 +580,7 @@ Wrap async systems with synchronous interface:
 
 ## Next Steps
 
+- Learn about [StageFlow](../stageflow/README.md) for workflow orchestration
 - Implement [Interceptors](../interceptors/README.md) for cross-cutting concerns
 - Add [Monitoring](../monitoring/README.md) to track performance
 - Review [Examples](../../README.md#examples) for real-world usage
-- Learn about [Performance Tuning](../../advanced/performance.md)

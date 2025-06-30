@@ -26,9 +26,11 @@ A unit of work that:
 
 ### Compensation
 Rollback logic that runs when a stage fails, undoing previously completed stages in reverse order.
+**Note**: Go implementation does not currently support automatic compensation.
 
 ### Context
 The state object passed between stages, containing both input data and accumulated results.
+**Go Implementation**: Uses `map[string]interface{}` for state, with optional typed wrapper available.
 
 ## Basic Usage
 
@@ -81,50 +83,55 @@ public class OrderWorkflow : Workflow<OrderContext>
 <td>
 
 ```go
-// Define context
-type OrderContext struct {
-    OrderID    string      `json:"orderId"`
-    CustomerID string      `json:"customerId"`
-    Items      []OrderItem `json:"items"`
-    TotalAmount float64    `json:"totalAmount"`
+// OPTION 1: Untyped workflow (current implementation)
+func NewOrderWorkflow() *stageflow.Workflow {
+    workflow := stageflow.NewWorkflow("order-processing", "Order Processing")
     
-    // Stage results
-    InventoryReserved bool   `json:"inventoryReserved"`
-    PaymentID        string `json:"paymentId"`
-    ShipmentID       string `json:"shipmentId"`
+    // Add stages with retry policies
+    workflow.AddStage("validate", &ValidateOrderStage{},
+        stageflow.WithStageTimeout(30*time.Second),
+        stageflow.WithStageRetryPolicy(
+            reliability.NewExponentialBackoff(100*time.Millisecond, 5*time.Second, 2.0, 3)))
+    
+    workflow.AddStage("process-payment", &ProcessPaymentStage{},
+        stageflow.WithStageTimeout(60*time.Second),
+        stageflow.WithStageRetryPolicy(
+            reliability.NewLinearBackoff(time.Second, 10*time.Second, 5)))
+    
+    workflow.AddStage("arrange-shipping", &ArrangeShippingStage{})
+    
+    return workflow
 }
 
-// Create workflow
-func NewOrderWorkflow() *stageflow.Flow[*OrderContext] {
-    flow := stageflow.NewFlow[*OrderContext](
-        "order-processing",
-        stageflow.WithTimeout(10*time.Minute))
+// OPTION 2: Type-safe workflow (via typed wrapper)
+type OrderWorkflowContext struct {
+    OrderID         string          `json:"orderId"`
+    CustomerID      string          `json:"customerId"`
+    Items           []OrderItem     `json:"items"`
+    TotalAmount     float64         `json:"totalAmount"`
+    ShippingAddress ShippingAddress `json:"shippingAddress"`
     
-    flow.AddStage("validate", 
-        &ValidateOrderStage{})
-    
-    flow.AddStage("calculate-pricing",
-        &CalculatePricingStage{})
-    
-    flow.AddStage("reserve-inventory",
-        &ReserveInventoryStage{})
-    flow.AddCompensation("reserve-inventory",
-        &ReleaseInventoryStage{})
-    
-    flow.AddStage("process-payment",
-        &ProcessPaymentStage{})
-    flow.AddCompensation("process-payment",
-        &RefundPaymentStage{})
-    
-    flow.AddStage("create-shipment",
-        &CreateShipmentStage{})
-    flow.AddCompensation("create-shipment",
-        &CancelShipmentStage{})
-    
-    flow.AddStage("send-confirmation",
-        &SendConfirmationStage{})
-    
-    return flow
+    // Stage results (typed!)
+    Validated         bool      `json:"validated,omitempty"`
+    InventoryReserved bool      `json:"inventoryReserved,omitempty"`
+    PaymentID         string    `json:"paymentId,omitempty"`
+    TrackingNumber    string    `json:"trackingNumber,omitempty"`
+}
+
+func (c *OrderWorkflowContext) Validate() error {
+    if c.CustomerID == "" {
+        return fmt.Errorf("customer ID is required")
+    }
+    return nil
+}
+
+func NewTypedOrderWorkflow() *stageflow.Workflow {
+    return stageflow.NewTypedWorkflow[*OrderWorkflowContext]("order-processing", "Order Processing").
+        AddTypedStage("validate", &ValidateOrderStage{}).
+        AddTypedStage("check-inventory", &CheckInventoryStage{}).
+        AddTypedStage("process-payment", &ProcessPaymentStage{}).
+        AddTypedStage("arrange-shipping", &ArrangeShippingStage{}).
+        Build()
 }
 ```
 
@@ -202,52 +209,66 @@ public class RefundPaymentStage :
 <td>
 
 ```go
-// Regular stage
+// OPTION 1: Untyped stage (works with map[string]interface{})
 type ProcessPaymentStage struct {
     paymentService PaymentService
 }
 
-func (s *ProcessPaymentStage) Execute(
-    ctx context.Context,
-    context *OrderContext) error {
+func (s *ProcessPaymentStage) Execute(ctx context.Context, state *stageflow.WorkflowState) (*stageflow.StageResult, error) {
+    // Extract data from untyped state
+    orderID, _ := state.GlobalData["orderId"].(string)
+    totalAmount, _ := state.GlobalData["totalAmount"].(float64)
+    customerID, _ := state.GlobalData["customerId"].(string)
     
-    result, err := s.paymentService.ProcessPayment(
-        ctx, PaymentRequest{
-            Amount:     context.TotalAmount,
-            CustomerID: context.CustomerID,
-            OrderID:    context.OrderID,
-        })
+    result, err := s.paymentService.ProcessPayment(ctx, PaymentRequest{
+        Amount:     totalAmount,
+        CustomerID: customerID,
+        OrderID:    orderID,
+    })
     
     if err != nil {
-        return fmt.Errorf("payment failed: %w", err)
+        return &stageflow.StageResult{
+            StageID: s.GetStageID(),
+            Status:  stageflow.StageFailed,
+            Error:   err.Error(),
+        }, err
     }
     
-    if !result.Success {
-        return stageflow.NewStageError(
-            "payment failed: " + result.Error)
+    // Update state with results
+    state.GlobalData["paymentId"] = result.TransactionID
+    state.GlobalData["paymentProcessed"] = true
+    
+    return &stageflow.StageResult{
+        StageID: s.GetStageID(),
+        Status:  stageflow.StageCompleted,
+    }, nil
+}
+
+func (s *ProcessPaymentStage) GetStageID() string {
+    return "process-payment"
+}
+
+// OPTION 2: Typed stage (via typed wrapper)
+type TypedProcessPaymentStage struct{}
+
+func (s *TypedProcessPaymentStage) Execute(ctx context.Context, order *OrderWorkflowContext) error {
+    // Direct typed access - no type assertions!
+    if order.PaymentID != "" {
+        return fmt.Errorf("payment already processed")
     }
     
-    context.PaymentID = result.TransactionID
-    context.PaymentProcessed = true
+    // Simulate payment processing
+    log.Printf("Processing payment: $%.2f for order %s", order.TotalAmount, order.OrderID)
+    time.Sleep(2 * time.Second)
+    
+    // Update typed context
+    order.PaymentID = fmt.Sprintf("PAY-%d", time.Now().Unix())
+    
     return nil
 }
 
-// Compensation stage
-type RefundPaymentStage struct {
-    paymentService PaymentService
-}
-
-func (s *RefundPaymentStage) Compensate(
-    ctx context.Context,
-    context *OrderContext,
-    stageErr error) error {
-    
-    if context.PaymentID != "" {
-        return s.paymentService.RefundPayment(
-            ctx, context.PaymentID,
-            "Order processing failed")
-    }
-    return nil
+func (s *TypedProcessPaymentStage) GetStageID() string {
+    return "process-payment"
 }
 ```
 
@@ -307,33 +328,50 @@ catch (WorkflowException ex)
 <td>
 
 ```go
-// Execute workflow
+// OPTION 1: Untyped workflow execution
 workflow := NewOrderWorkflow()
-context := &OrderContext{
-    OrderID:    "ORDER-123",
-    CustomerID: "CUST-456",
-    Items:      orderItems,
+initialData := map[string]interface{}{
+    "orderId":    "ORDER-123",
+    "customerId": "CUST-456",
+    "items":      orderItems,
+    "totalAmount": 299.99,
 }
 
-result, err := workflow.Execute(ctx, context)
+// Execute asynchronously via queues
+state, err := workflow.Execute(ctx, initialData)
 if err != nil {
-    var wfErr *stageflow.WorkflowError
-    if errors.As(err, &wfErr) {
-        log.Error("Workflow failed",
-            "stage", wfErr.FailedStage,
-            "error", wfErr.Error())
-    }
+    log.Printf("Failed to start workflow: %v", err)
     return err
 }
 
-if result.Success {
-    log.Info("Order processed successfully",
-        "orderId", context.OrderID)
-} else {
-    log.Error("Order processing failed",
-        "orderId", context.OrderID,
-        "error", result.Error)
+log.Printf("Workflow started: %s (processing asynchronously)", state.InstanceID)
+
+// OPTION 2: Typed workflow execution  
+workflow := NewTypedOrderWorkflow()
+orderContext := &OrderWorkflowContext{
+    OrderID:     "ORDER-123",
+    CustomerID:  "CUST-456",
+    Items:       orderItems,
+    TotalAmount: 299.99,
 }
+
+// Execute with type safety
+state, err := stageflow.ExecuteTyped(workflow, ctx, orderContext)
+if err != nil {
+    log.Printf("Failed to start typed workflow: %v", err)
+    return err
+}
+
+log.Printf("Typed workflow started: %s", state.InstanceID)
+
+// OPTION 3: Register and handle via StageFlow engine
+engine := stageflow.NewStageFlowEngine(publisher, subscriber)
+err = engine.RegisterWorkflow(workflow)
+if err != nil {
+    return fmt.Errorf("failed to register workflow: %w", err)
+}
+
+// Workflows execute via message handling automatically
 ```
 
 </td>
