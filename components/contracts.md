@@ -725,6 +725,130 @@ func TestOrderEvent_Serialization(t *testing.T) {
 }
 ```
 
+## Endpoint Contract Discovery
+
+Mmate supports automatic endpoint discovery, allowing services to dynamically discover and communicate with each other without hardcoded endpoints. This feature is inspired by MATS3.io's decentralized approach.
+
+### How It Works
+
+Each service owns and publishes its own endpoint contracts:
+
+<table>
+<tr>
+<th>.NET</th>
+<th>Go</th>
+</tr>
+<tr>
+<td>
+
+```csharp
+// Register an endpoint
+await client.RegisterEndpointAsync(
+    new EndpointContract
+    {
+        EndpointId = "order.validate",
+        Version = "1.0.0",
+        Queue = "order-service.validate",
+        InputType = "ValidateOrderCommand",
+        OutputType = "ValidationResult",
+        Description = "Validates order details"
+    });
+
+// Discover endpoints
+var contract = await client.DiscoverEndpointAsync(
+    "order.validate");
+
+// Discover by pattern
+var contracts = await client.DiscoverEndpointsAsync(
+    "order.*", version: "1.0.0");
+```
+
+</td>
+<td>
+
+```go
+// Register an endpoint
+client.RegisterEndpoint(ctx, &contracts.EndpointContract{
+    EndpointID:  "order.validate",
+    Version:     "1.0.0",
+    Queue:       "order-service.validate",
+    InputType:   "ValidateOrderCommand",
+    OutputType:  "ValidationResult",
+    Description: "Validates order details",
+})
+
+// Discover endpoints
+contract, err := client.DiscoverEndpoint(ctx, 
+    "order.validate")
+
+// Discover by pattern
+contracts, err := client.DiscoverEndpoints(ctx, 
+    "order.*", "1.0.0")
+```
+
+</td>
+</tr>
+</table>
+
+### Endpoint Contract Structure
+
+```json
+{
+  "endpointId": "payment.process",
+  "version": "2.0.0",
+  "serviceName": "payment-service",
+  "queue": "payment-service.process.v2",
+  "inputType": "ProcessPaymentCommand",
+  "outputType": "PaymentResult",
+  "description": "Process payment with 3D secure",
+  "deprecated": false,
+  "metadata": {
+    "sla": "500ms",
+    "authentication": "required"
+  },
+  "inputSchema": { /* JSON Schema */ },
+  "outputSchema": { /* JSON Schema */ }
+}
+```
+
+### Discovery Protocol
+
+1. **Registration**: Services register their endpoints on startup
+2. **Announcement**: Periodic broadcasts of available endpoints
+3. **Discovery**: Query for endpoints by ID or pattern
+4. **Caching**: Local caching of discovered contracts
+
+### Benefits
+
+- **Decentralized**: No central registry required
+- **Dynamic**: Services can be added/removed without configuration changes
+- **Type-Safe**: Contracts include schemas for validation
+- **Versioned**: Support for multiple versions simultaneously
+- **Resilient**: Works even if discovery service is temporarily unavailable
+
+### Using Discovered Endpoints
+
+```go
+// Discover and use an endpoint
+contract, err := client.DiscoverEndpoint(ctx, "inventory.check")
+if err != nil {
+    return err
+}
+
+// Send message to discovered endpoint
+err = client.PublishCommand(ctx, 
+    CheckInventoryCommand{SKU: "ABC123"},
+    mmate.WithDirectQueue(contract.Queue))
+```
+
+### Best Practices
+
+1. **Register on Startup**: Register all endpoints when service starts
+2. **Use Patterns**: Discover groups of related endpoints
+3. **Handle Missing**: Gracefully handle missing endpoints
+4. **Cache Results**: Cache discovered contracts locally
+5. **Version Carefully**: Use semantic versioning for contracts
+
 ## Next Steps
 
 - Learn about [Message Handlers](../messaging/README.md#handlers)

@@ -17,17 +17,20 @@ Mmate implements several messaging patterns:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      Application Layer                       │
+│                      Application Layer                      │
 ├─────────────────────────────────────────────────────────────┤
 │  StageFlow  │  Bridge  │  Interceptors  │  Schema/Contracts │
 ├─────────────────────────────────────────────────────────────┤
-│                    Messaging Core                            │
+│                    Messaging Core                           │
 │  Publisher  │  Subscriber  │  Dispatcher  │  Handlers       │
 ├─────────────────────────────────────────────────────────────┤
-│                    Reliability Layer                         │
-│  Retry     │  Circuit Breaker  │  DLQ    │  Monitoring     │
+│                  Discovery & Registry                       │
+│  Contract Discovery  │  Endpoint Registry  │  Announcements │
 ├─────────────────────────────────────────────────────────────┤
-│                    Transport Adapter                         │
+│                    Reliability Layer                        │
+│  Retry     │  Circuit Breaker  │  DLQ    │  Monitoring      │
+├─────────────────────────────────────────────────────────────┤
+│                    Transport Adapter                        │
 │                      RabbitMQ/AMQP                          │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -157,7 +160,14 @@ Consistent across both platforms:
 - Chain of responsibility pattern
 - Platform-specific implementations
 
-### 6. Reliability
+### 6. Contract Discovery
+- **Endpoint Registry**: Services register their available endpoints
+- **Discovery Protocol**: Query endpoints by ID or pattern
+- **Announcements**: Periodic broadcasts of available contracts
+- **Decentralized**: Each service owns its contracts
+- **Schema Integration**: Contracts include JSON schemas
+
+### 7. Reliability
 - **Retry Policies**: Exponential backoff, fixed delay
 - **Circuit Breaker**: Prevent cascading failures
 - **Dead Letter Queue**: Handle poison messages
