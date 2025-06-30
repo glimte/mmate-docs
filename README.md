@@ -1,10 +1,10 @@
-# Mmate Documentation
+# Message Mate Documentation
 
-Welcome to the unified documentation for Mmate - a comprehensive messaging framework available for both .NET and Go.
+Welcome to the unified documentation for Message Mate (Mmate) - a comprehensive messaging framework available for both .NET and Go.
 
 ## Overview
 
-Mmate provides high-level abstractions for messaging patterns built on top of RabbitMQ, offering:
+Mmate provides high-level abstractions for messaging patterns built on top of brokers like RabbitMQ, offering:
 - Type-safe messaging with contracts
 - Multiple messaging patterns (Pub/Sub, Request/Reply, etc.)
 - Workflow orchestration with StageFlow
