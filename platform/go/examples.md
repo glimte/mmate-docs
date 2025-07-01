@@ -787,3 +787,188 @@ func TestOrderWorkflow_Integration(t *testing.T) {
     assert.NotEmpty(t, context.ShipmentID)
 }
 ```
+
+## Contract Publishing Example
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "time"
+    mmate "github.com/glimte/mmate-go"
+    "github.com/glimte/mmate-go/contracts"
+    "github.com/glimte/mmate-go/messaging"
+)
+
+// Service command with full documentation
+type CreateOrderCommand struct {
+    contracts.BaseCommand
+    CustomerID   string  `json:"customerId" description:"Unique customer identifier"`
+    ProductID    string  `json:"productId" description:"Product to order"`
+    Quantity     int     `json:"quantity" description:"Number of items"`
+    TotalAmount  float64 `json:"totalAmount" description:"Order total in USD"`
+}
+
+// Service reply
+type OrderCreatedReply struct {
+    contracts.BaseReply
+    OrderID     string    `json:"orderId"`
+    Status      string    `json:"status"`
+    CreatedAt   time.Time `json:"createdAt"`
+}
+
+func main() {
+    ctx := context.Background()
+    
+    // Create client with contract publishing enabled
+    client, err := mmate.NewClientWithOptions(
+        "amqp://localhost",
+        mmate.WithServiceName("order-service"),
+        mmate.WithContractPublishing(), // Enable auto-publishing
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+    
+    // Register message types
+    messaging.Register("CreateOrderCommand", func() contracts.Message { 
+        return &CreateOrderCommand{} 
+    })
+    messaging.Register("OrderCreatedReply", func() contracts.Message { 
+        return &OrderCreatedReply{} 
+    })
+    
+    dispatcher := client.Dispatcher()
+    
+    // Register handler - contract is automatically extracted and published
+    handler := messaging.MessageHandlerFunc(func(ctx context.Context, msg contracts.Message) error {
+        cmd := msg.(*CreateOrderCommand)
+        log.Printf("Processing order for customer %s", cmd.CustomerID)
+        
+        // Process order...
+        
+        // Send reply
+        reply := &OrderCreatedReply{
+            BaseReply: contracts.BaseReply{
+                BaseMessage: contracts.NewBaseMessage("OrderCreatedReply"),
+                Success:     true,
+            },
+            OrderID:   "ORDER-12345",
+            Status:    "created",
+            CreatedAt: time.Now(),
+        }
+        
+        if cmd.ReplyTo != "" {
+            return client.Publisher().PublishReply(ctx, reply, cmd.ReplyTo)
+        }
+        return nil
+    })
+    
+    // Register handler - this triggers contract extraction and publishing
+    err = dispatcher.RegisterHandler(&CreateOrderCommand{}, handler)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    log.Println("Service started with contract publishing enabled")
+    log.Println("Contracts are published to 'mmate.contracts' exchange")
+    
+    // The published contract includes:
+    // - Endpoint ID: "order-service.CreateOrderCommand"
+    // - Input/Output types with JSON schemas
+    // - Queue information
+    // - Service metadata
+    
+    // Keep service running
+    select {}
+}
+```
+
+### Consuming Published Contracts
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "log"
+    mmate "github.com/glimte/mmate-go"
+    "github.com/glimte/mmate-go/contracts"
+    "github.com/glimte/mmate-go/messaging"
+)
+
+func main() {
+    ctx := context.Background()
+    
+    // Create client to consume contracts
+    client, err := mmate.NewClientWithOptions(
+        "amqp://localhost",
+        mmate.WithServiceName("api-gateway"),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+    
+    // Register contract message type
+    messaging.Register("ContractAnnouncement", func() contracts.Message { 
+        return &contracts.ContractAnnouncement{} 
+    })
+    
+    // Create queue for receiving contract announcements
+    viewerQueue := "contract.viewer.api-gateway"
+    transport := client.Transport()
+    
+    err = transport.DeclareQueueWithBindings(ctx, viewerQueue, 
+        messaging.QueueOptions{
+            Durable:    true,
+            AutoDelete: false,
+        }, 
+        []messaging.QueueBinding{
+            {
+                Exchange:   "mmate.contracts",
+                RoutingKey: "contract.announce",
+            },
+        })
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // Subscribe to contract announcements
+    subscriber := client.Subscriber()
+    handler := messaging.MessageHandlerFunc(func(ctx context.Context, msg contracts.Message) error {
+        announcement := msg.(*contracts.ContractAnnouncement)
+        
+        for _, contract := range announcement.Contracts {
+            log.Printf("Discovered service contract:")
+            log.Printf("  Service: %s", contract.ServiceName)
+            log.Printf("  Endpoint: %s", contract.EndpointID)
+            log.Printf("  Queue: %s", contract.Queue)
+            log.Printf("  Input: %s", contract.InputType)
+            log.Printf("  Output: %s", contract.OutputType)
+            
+            // Use the schema for validation
+            if len(contract.InputSchema) > 0 {
+                var schema map[string]interface{}
+                json.Unmarshal(contract.InputSchema, &schema)
+                log.Printf("  Schema available for validation")
+            }
+        }
+        
+        return nil
+    })
+    
+    err = subscriber.Subscribe(ctx, viewerQueue, "ContractAnnouncement",
+        messaging.NewAutoAcknowledgingHandler(handler))
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    log.Println("Listening for service contracts...")
+    select {}
+}
+```

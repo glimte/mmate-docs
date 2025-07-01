@@ -158,6 +158,9 @@ func WithDLQHandler(handler *reliability.DLQHandler) ClientOption
 // Metrics configuration
 func WithMetrics(collector interceptors.MetricsCollector) ClientOption
 func WithDefaultMetrics() ClientOption
+
+// Contract publishing configuration
+func WithContractPublishing() ClientOption
 ```
 
 ### Client Methods

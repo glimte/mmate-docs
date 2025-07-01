@@ -201,6 +201,13 @@ Pattern: `stageflow.{workflowId}.stage{index}`
 - Durable: `true`
 - Used for complex routing
 
+### Contracts Exchange
+- Name: `mmate.contracts`
+- Type: `topic`
+- Durable: `true`
+- Used for service contract discovery
+- Routing pattern: `contract.announce`
+
 ## Routing Patterns
 
 ### Event Routing

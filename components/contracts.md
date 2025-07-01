@@ -729,6 +729,74 @@ func TestOrderEvent_Serialization(t *testing.T) {
 
 Mmate supports automatic endpoint discovery, allowing services to dynamically discover and communicate with each other without hardcoded endpoints. This feature is inspired by MATS3.io's decentralized approach.
 
+### Automatic Contract Publishing
+
+When contract publishing is enabled, services automatically extract and publish contracts for all registered message handlers and workflows:
+
+<table>
+<tr>
+<th>.NET</th>
+<th>Go</th>
+</tr>
+<tr>
+<td>
+
+```csharp
+// Enable contract publishing
+var client = new MmateClient(
+    "amqp://localhost",
+    options => options
+        .WithServiceName("order-service")
+        .WithContractPublishing() // Coming soon
+);
+```
+
+</td>
+<td>
+
+```go
+// Enable contract publishing
+client, err := mmate.NewClientWithOptions(
+    "amqp://localhost",
+    mmate.WithServiceName("order-service"),
+    mmate.WithContractPublishing(), // Auto-publishes contracts
+)
+```
+
+</td>
+</tr>
+</table>
+
+With contract publishing enabled:
+1. **Auto-extraction**: Contracts are automatically extracted when handlers are registered
+2. **JSON Schema Generation**: Schemas are generated from message types using reflection
+3. **Periodic announcements**: Contracts are announced every 30 seconds on `mmate.contracts` exchange
+4. **Zero configuration**: No manual contract registration needed
+
+### Contract Messages
+
+Contracts are published as `ContractAnnouncement` messages to the `mmate.contracts` exchange:
+
+```json
+{
+  "type": "ContractAnnouncement",
+  "action": "registered",
+  "contracts": [{
+    "endpointId": "order-service.ProcessOrderCommand",
+    "version": "1.0.0",
+    "serviceName": "order-service",
+    "description": "Handles ProcessOrderCommand messages",
+    "queue": "handler.ProcessOrderCommand",
+    "inputType": "ProcessOrderCommand",
+    "outputType": "OrderProcessedReply",
+    "inputSchema": { /* JSON Schema */ },
+    "outputSchema": { /* JSON Schema */ },
+    "timeout": "30s",
+    "maxRetries": 3
+  }]
+}
+```
+
 ### How It Works
 
 Each service owns and publishes its own endpoint contracts:
