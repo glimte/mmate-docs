@@ -773,6 +773,8 @@ func (h *HealthChecker) ServeHTTP(
 
 ## Advanced Features
 
+> **Go Implementation Note**: All advanced features are available through both the `Client` convenience methods and the `Publisher` directly. Using the Client methods is recommended for better discoverability.
+
 ### Batch Publishing
 
 <table>
@@ -818,8 +820,11 @@ catch
 <td>
 
 ```go
+// Using Client convenience methods (recommended)
+client, _ := mmate.NewClient(connectionString)
+
 // Batch publish
-batch := publisher.NewBatch()
+batch := client.NewBatch()
 
 for _, order := range orders {
     batch.Add(&OrderCreatedEvent{
@@ -831,8 +836,12 @@ for _, order := range orders {
 
 err := batch.Publish(ctx)
 
+// Or using publisher directly
+batch := client.Publisher().NewBatch()
+// ... same as above
+
 // Transactional publish
-tx, err := publisher.BeginTx()
+tx, err := client.BeginTx()
 if err != nil {
     return err
 }
@@ -856,6 +865,46 @@ return tx.Commit()
 </table>
 
 ### Message Scheduling
+
+> **Plugin Requirement**: Message scheduling requires the [RabbitMQ Delayed Message Exchange plugin](https://github.com/rabbitmq/rabbitmq-delayed-message-exchange) to be installed and enabled.
+
+#### What is the Delayed Message Exchange Plugin?
+
+The plugin adds the ability to delay message delivery in RabbitMQ:
+- **Without plugin**: Messages are delivered immediately to consumers
+- **With plugin**: Messages can be scheduled for future delivery (e.g., "deliver in 5 minutes" or "deliver at 3:00 PM")
+
+#### Installation
+
+The plugin must be installed **on the RabbitMQ server**, not in your application:
+
+**Option 1: Using Docker Compose**
+```yaml
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    command: >
+      bash -c "
+        rabbitmq-plugins enable rabbitmq_delayed_message_exchange &&
+        rabbitmq-server
+      "
+```
+
+**Option 2: Using Dockerfile**
+```dockerfile
+FROM rabbitmq:3-management
+RUN rabbitmq-plugins enable rabbitmq_delayed_message_exchange
+```
+
+**Option 3: Local RabbitMQ Installation**
+```bash
+# On the server where RabbitMQ is running
+rabbitmq-plugins enable rabbitmq_delayed_message_exchange
+# Then restart RabbitMQ
+systemctl restart rabbitmq-server  # or your system's restart command
+```
+
+> **Important**: If the plugin isn't installed, scheduled messages will be delivered immediately (the delay is ignored)
 
 <table>
 <tr>
@@ -887,20 +936,26 @@ await publisher.ScheduleRecurringAsync(
 <td>
 
 ```go
+// Using Client convenience methods (recommended)
+client, _ := mmate.NewClient(connectionString)
+
 // Delayed message
-err = publisher.PublishCommand(ctx,
+err = client.PublishWithDelay(ctx,
     command,
-    messaging.WithDelay(5*time.Minute))
+    5*time.Minute)
 
 // Scheduled message
-err = publisher.ScheduleCommand(ctx,
+err = client.ScheduleCommand(ctx,
     command,
     time.Now().Add(time.Hour))
 
-// Recurring messages
-err = publisher.ScheduleRecurring(ctx,
-    &HealthCheckCommand{},
-    "0 */5 * * * *") // Every 5 min
+// Or using publisher directly
+err = client.Publisher().ScheduleCommand(ctx,
+    command,
+    time.Now().Add(time.Hour))
+
+// Recurring messages (not yet implemented)
+// Requires additional scheduler service
 ```
 
 </td>
