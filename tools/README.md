@@ -1,6 +1,6 @@
 # Mmate Tools
 
-Mmate provides command-line tools for monitoring and managing your messaging system.
+Mmate provides external command-line tools for monitoring and managing your messaging system. These tools are distributed from the [mmate-toolbox](https://github.com/glimte/mmate-toolbox) repository as standalone utilities.
 
 ## Available Tools
 
@@ -12,22 +12,24 @@ Interactive terminal UI dashboard for real-time monitoring.
 
 ## Installation
 
+All tools are distributed from the external [mmate-toolbox repository](https://github.com/glimte/mmate-toolbox).
+
 ### CLI Monitor
 ```bash
 # Go
-go install github.com/glimte/mmate-go/cmd/monitor@latest
+go install github.com/glimte/mmate-toolbox/cmd/monitor@latest
 
 # .NET
-dotnet tool install -g Mmate.Monitor
+dotnet tool install -g MmateToolbox.Monitor
 ```
 
 ### TUI Dashboard
 ```bash
 # Go
-go install github.com/glimte/mmate-go/cmd/mmate-tui@latest
+go install github.com/glimte/mmate-toolbox/cmd/mmate-tui@latest
 
 # .NET
-dotnet tool install -g Mmate.Tui
+dotnet tool install -g MmateToolbox.Tui
 ```
 
 ## Quick Start
@@ -72,3 +74,14 @@ Both tools support configuration via:
 - Configuration files
 
 See individual tool documentation for details.
+
+## Repository Information
+
+The Mmate CLI tools are maintained in a separate repository to provide standalone utilities that can be used independently of the main Mmate implementation libraries:
+
+- **Repository**: [github.com/glimte/mmate-toolbox](https://github.com/glimte/mmate-toolbox)
+- **Documentation**: Available in the toolbox repository
+- **Releases**: Check the toolbox repository for latest releases
+- **Issues**: Report tool-specific issues in the toolbox repository
+
+This separation allows the tools to be updated independently and provides a cleaner installation experience for users who only need monitoring capabilities.

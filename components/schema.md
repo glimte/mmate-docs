@@ -200,6 +200,15 @@ subscriber := messaging.NewMessageSubscriber(
 
 ## Schema Versioning
 
+### Versioning Strategy for mmate-go
+
+Since mmate-go stores one schema per message type, developers should adopt these strategies:
+
+1. **Message Type Versioning**: Include version in the message type name
+2. **Additive Changes Only**: Only add optional fields to existing messages
+3. **Explicit Version Handling**: Handle multiple versions explicitly in consumers
+4. **Gradual Migration**: Support old versions during transition periods
+
 ### Version Evolution
 
 <table>
@@ -391,6 +400,159 @@ pipeline := interceptors.NewPipeline(
 </tr>
 </table>
 
+### Practical Schema Versioning in Go
+
+While mmate-go has type registration for serialization (`messaging.Register`), schema versioning requires additional implementation. Here's the recommended approach:
+
+#### 1. Type Registration with Versioning
+
+```go
+// Register message types for serialization
+messaging.Register("OrderEvent", func() contracts.Message {
+    return &OrderEvent{}
+})
+messaging.Register("OrderEventV2", func() contracts.Message {
+    return &OrderEventV2{}
+})
+
+// Create and configure schema validator
+validator := schema.NewMessageValidator()
+
+// Register schemas with version in the key
+validator.RegisterSchema("OrderEvent", orderEventSchemaV1)
+validator.RegisterSchema("OrderEventV2", orderEventSchemaV2)
+
+// Or use versioned keys
+validator.RegisterSchema("OrderEvent:v1.0", orderEventSchemaV1)
+validator.RegisterSchema("OrderEvent:v2.0", orderEventSchemaV2)
+```
+
+#### 2. Version-Aware Message Handler
+```go
+type VersionAwareOrderHandler struct {
+    validator *schema.MessageValidator
+}
+
+func (h *VersionAwareOrderHandler) Handle(ctx context.Context, msg contracts.Message) error {
+    switch m := msg.(type) {
+    case *OrderEvent:
+        // Handle V1 - convert to V2 for processing
+        v2 := h.migrateV1ToV2(m)
+        return h.processOrder(ctx, v2)
+    case *OrderEventV2:
+        // Handle V2 directly
+        return h.processOrder(ctx, m)
+    default:
+        return fmt.Errorf("unsupported message version: %T", msg)
+    }
+}
+
+func (h *VersionAwareOrderHandler) migrateV1ToV2(v1 *OrderEvent) *OrderEventV2 {
+    return &OrderEventV2{
+        BaseEvent: v1.BaseEvent,
+        OrderID:   v1.OrderID,
+        Amount:    v1.Amount,
+        Currency:  "USD", // Provide defaults for new fields
+    }
+}
+```
+
+#### 3. Schema Evolution Best Practices
+
+**Safe Changes (Backward Compatible):**
+- Add optional fields (with `omitempty` tag)
+- Widen numeric types (int32 → int64)
+- Change required field to optional
+
+**Breaking Changes (Require New Version):**
+- Remove fields
+- Rename fields
+- Change field types
+- Make optional field required
+
+#### 4. Deployment Strategy
+```go
+// Phase 1: Deploy consumers that handle both versions
+subscriber.Subscribe("orders", &VersionAwareOrderHandler{})
+
+// Phase 2: Deploy producers using new version
+publisher.Publish(ctx, &OrderEventV2{...})
+
+// Phase 3: After all producers upgraded, remove V1 support
+// (keeping it for historical message replay if needed)
+```
+
+#### 5. Integrating Schema Versioning
+
+Since schema versioning is not built into the Client interface, you need to implement it:
+
+```go
+// 1. Add schema version when publishing
+err := publisher.Publish(ctx, &OrderEventV2{...},
+    messaging.WithHeader("x-schema-version", "2.0"))
+
+// 2. Create a schema-aware interceptor
+type SchemaInterceptor struct {
+    validator *schema.MessageValidator
+}
+
+func NewSchemaInterceptor() *SchemaInterceptor {
+    validator := schema.NewMessageValidator()
+    // Register your schemas
+    validator.RegisterSchema("OrderEvent:v1.0", orderSchemaV1)
+    validator.RegisterSchema("OrderEvent:v2.0", orderSchemaV2)
+    return &SchemaInterceptor{validator: validator}
+}
+
+func (i *SchemaInterceptor) Intercept(ctx context.Context, msg contracts.Message, next interceptors.MessageHandler) error {
+    // For outgoing messages: add schema version
+    if publisher, ok := ctx.Value("publisher").(bool); ok && publisher {
+        // Determine version from message type
+        version := "1.0" // or detect from type name suffix
+        if strings.HasSuffix(msg.GetType(), "V2") {
+            version = "2.0"
+        }
+        // Add to publish options via context
+        ctx = context.WithValue(ctx, "x-schema-version", version)
+    }
+    
+    // For incoming messages: validate against schema
+    return next.Handle(ctx, msg)
+}
+
+// 3. Use with Client
+pipeline := interceptors.NewPipeline(
+    NewSchemaInterceptor(),
+    // other interceptors...
+)
+
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithInterceptors(pipeline))
+```
+
+#### 6. Best Practices for Schema Evolution
+
+1. **Use Type Suffixes for Breaking Changes**:
+   ```go
+   messaging.Register("OrderEvent", func() contracts.Message { return &OrderEvent{} })
+   messaging.Register("OrderEventV2", func() contracts.Message { return &OrderEventV2{} })
+   ```
+
+2. **Include Version in Headers**:
+   ```go
+   messaging.WithHeader("x-schema-version", "2.0")
+   ```
+
+3. **Handle Multiple Versions in Consumers**:
+   - Check message type first (from envelope)
+   - Then check schema version header
+   - Have migration logic between versions
+
+4. **Gradual Migration Strategy**:
+   - Deploy consumers that handle both versions
+   - Update producers to new version
+   - Monitor and remove old version support later
+
 ## Advanced Features
 
 ### Custom Validators
@@ -496,13 +658,10 @@ generator := schema.NewJSONSchemaGenerator()
 jsonSchema, err := generator.Generate(
     reflect.TypeOf(CreateOrderCommand{}))
 
-// Generate OpenAPI spec
-openAPIGen := schema.NewOpenAPIGenerator()
-spec, err := openAPIGen.Generate(registry)
-
-// Generate protobuf definitions
-protoGen := schema.NewProtobufGenerator()
-proto, err := protoGen.Generate(registry)
+// JSON schemas can be used for:
+// - API documentation
+// - Client code generation
+// - Contract testing
 ```
 
 </td>

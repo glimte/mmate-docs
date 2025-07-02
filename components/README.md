@@ -8,7 +8,7 @@ This section documents the core components that make up the Mmate messaging fram
 |-----------|---------|--------------|
 | [Contracts](contracts/README.md) | Message type definitions | Commands, Events, Queries, Replies |
 | [Messaging](messaging/README.md) | Core pub/sub functionality | Publishers, Subscribers, Handlers |
-| [StageFlow](stageflow/README.md) | Workflow orchestration | Multi-stage processes, Compensation |
+| [StageFlow](stageflow.md) | Workflow orchestration | Multi-stage processes, Queue-based Compensation |
 | [Bridge](bridge/README.md) | Sync-over-async patterns | Request/Reply, Timeouts |
 | [Interceptors](interceptors/README.md) | Cross-cutting concerns | Logging, Metrics, Validation |
 | [Monitoring](monitoring/README.md) | Observability | Health checks, Metrics, Dashboards |
@@ -209,7 +209,9 @@ public class OrderWorkflow :
         builder
             .AddStage<ValidateOrder>()
             .AddStage<ProcessPayment>()
-            .AddStage<ShipOrder>();
+                .WithCompensation<RefundPayment>()
+            .AddStage<ShipOrder>()
+                .WithCompensation<CancelShipment>();
     }
 }
 ```
@@ -218,12 +220,17 @@ public class OrderWorkflow :
 <td>
 
 ```go
-workflow := stageflow.NewFlow[*OrderContext](
-    "order-processing")
+workflow := stageflow.NewTypedWorkflow[*OrderContext](
+    "order-processing", "Order Processing")
 
-workflow.AddStage("validate", &ValidateOrder{})
-workflow.AddStage("payment", &ProcessPayment{})
-workflow.AddStage("shipping", &ShipOrder{})
+workflow.AddTypedStage("validate", &ValidateOrder{})
+workflow.AddTypedStage("payment", &ProcessPayment{}).
+    WithCompensation(&RefundPayment{})
+workflow.AddTypedStage("shipping", &ShipOrder{}).
+    WithCompensation(&CancelShipment{})
+
+// Queue-based compensation handled automatically
+workflow.Build()
 ```
 
 </td>

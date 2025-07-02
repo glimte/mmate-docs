@@ -25,8 +25,8 @@ A unit of work that:
 - Can have compensation logic
 
 ### Compensation
-Rollback logic that runs when a stage fails, undoing previously completed stages in reverse order.
-**Note**: Go implementation does not currently support automatic compensation.
+Rollback logic that runs when a stage fails, undoing previously completed stages in reverse order via dedicated compensation queues.
+**Queue-based Architecture**: Both .NET and Go implementations support automatic compensation using queue-based messaging for resilient rollback operations.
 
 ### Context
 The state object passed between stages, containing both input data and accumulated results.
@@ -398,6 +398,11 @@ Each stage in a workflow gets its own dedicated message queue. Messages flow thr
 
 Queues are named using the pattern: `{StageQueuePrefix}{workflowId}.stage{index}`
 
+**Compensation Queues**: `stageflow.compensation.{workflowId}`
+- Used for queue-based compensation messaging
+- Ensures reliable rollback operations
+- Handles compensation workflows asynchronously
+
 <table>
 <tr>
 <th>.NET</th>
@@ -418,6 +423,7 @@ services.AddStageFlow(options =>
 // - myapp.stageflow.order-processing.stage0
 // - myapp.stageflow.order-processing.stage1
 // - myapp.stageflow.order-processing.stage2
+// - stageflow.compensation.order-processing (compensation queue)
 ```
 
 </td>
@@ -434,6 +440,7 @@ config := stageflow.Config{
 // - myapp.stageflow.order-processing.stage0
 // - myapp.stageflow.order-processing.stage1
 // - myapp.stageflow.order-processing.stage2
+// - stageflow.compensation.order-processing (compensation queue)
 ```
 
 </td>

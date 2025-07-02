@@ -285,40 +285,66 @@ func (h *OrderHandler) Handle(ctx context.Context, msg contracts.Message) error 
 }
 ```
 
-## StageFlow Workflow
+## StageFlow Workflow with Queue-Based Compensation
 
 ```go
 package main
 
 import (
     "context"
+    "fmt"
+    "log"
+    "time"
     "github.com/glimte/mmate-go/stageflow"
+    "github.com/glimte/mmate-go/contracts"
 )
 
 // Workflow context
 type OrderFulfillmentContext struct {
-    OrderID    string
-    CustomerID string
-    Items      []OrderItem
+    OrderID    string `json:"orderId"`
+    CustomerID string `json:"customerId"`
+    Items      []OrderItem `json:"items"`
     
     // Stage results
-    PaymentID       string
-    InventoryReserved bool
-    ShipmentID      string
-    TrackingNumber  string
+    PaymentID       string `json:"paymentId,omitempty"`
+    InventoryReserved bool `json:"inventoryReserved,omitempty"`
+    ShipmentID      string `json:"shipmentId,omitempty"`
+    TrackingNumber  string `json:"trackingNumber,omitempty"`
+}
+
+// Implement TypedWorkflowContext interface
+func (c *OrderFulfillmentContext) Validate() error {
+    if c.OrderID == "" {
+        return fmt.Errorf("order ID is required")
+    }
+    if c.CustomerID == "" {
+        return fmt.Errorf("customer ID is required")
+    }
+    if len(c.Items) == 0 {
+        return fmt.Errorf("order must have at least one item")
+    }
+    return nil
 }
 
 // Stage implementations
 type ValidateOrderStage struct{}
 
 func (s *ValidateOrderStage) Execute(ctx context.Context, wfCtx *OrderFulfillmentContext) error {
+    log.Printf("Validating order: %s", wfCtx.OrderID)
+    
     if wfCtx.OrderID == "" {
         return errors.New("order ID is required")
     }
     if len(wfCtx.Items) == 0 {
         return errors.New("order has no items")
     }
+    
+    log.Printf("Order validation passed: %s", wfCtx.OrderID)
     return nil
+}
+
+func (s *ValidateOrderStage) GetStageID() string {
+    return "validate-order"
 }
 
 type ProcessPaymentStage struct {
@@ -326,69 +352,225 @@ type ProcessPaymentStage struct {
 }
 
 func (s *ProcessPaymentStage) Execute(ctx context.Context, wfCtx *OrderFulfillmentContext) error {
+    log.Printf("Processing payment for order: %s", wfCtx.OrderID)
+    
     paymentID, err := s.paymentService.ProcessPayment(ctx, PaymentRequest{
         OrderID:    wfCtx.OrderID,
         CustomerID: wfCtx.CustomerID,
         Amount:     calculateTotal(wfCtx.Items),
     })
     if err != nil {
-        return err
+        return fmt.Errorf("payment processing failed: %w", err)
     }
     
     wfCtx.PaymentID = paymentID
+    log.Printf("Payment processed successfully: %s", paymentID)
     return nil
 }
 
-type RefundPaymentStage struct {
+func (s *ProcessPaymentStage) GetStageID() string {
+    return "process-payment"
+}
+
+// Compensation stage using TypedCompensationHandler interface
+type RefundPaymentCompensation struct {
     paymentService PaymentService
 }
 
-func (s *RefundPaymentStage) Compensate(ctx context.Context, 
+func (c *RefundPaymentCompensation) Compensate(ctx context.Context, 
     wfCtx *OrderFulfillmentContext, stageErr error) error {
-    if wfCtx.PaymentID != "" {
-        return s.paymentService.RefundPayment(ctx, wfCtx.PaymentID)
+    log.Printf("COMPENSATION: Refunding payment for order %s (error: %v)", 
+        wfCtx.OrderID, stageErr)
+    
+    if wfCtx.PaymentID == "" {
+        log.Printf("No payment to refund for order: %s", wfCtx.OrderID)
+        return nil
     }
+    
+    err := c.paymentService.RefundPayment(ctx, wfCtx.PaymentID)
+    if err != nil {
+        return fmt.Errorf("compensation failed - could not refund payment %s: %w", 
+            wfCtx.PaymentID, err)
+    }
+    
+    // Clear payment state
+    wfCtx.PaymentID = ""
+    log.Printf("Payment compensation completed for order: %s", wfCtx.OrderID)
     return nil
 }
 
-// Create and execute workflow
-func ProcessOrder(ctx context.Context, orderID string) error {
-    // Create workflow
-    workflow := stageflow.NewFlow[*OrderFulfillmentContext](
-        "order-fulfillment",
-        stageflow.WithTimeout(10*time.Minute))
+func (c *RefundPaymentCompensation) GetStageID() string {
+    return "refund-payment"
+}
+
+type ReserveInventoryStage struct {
+    inventoryService InventoryService
+}
+
+func (s *ReserveInventoryStage) Execute(ctx context.Context, wfCtx *OrderFulfillmentContext) error {
+    log.Printf("Reserving inventory for order: %s", wfCtx.OrderID)
     
-    // Add stages
-    workflow.AddStage("validate", &ValidateOrderStage{})
-    
-    workflow.AddStage("payment", &ProcessPaymentStage{
-        paymentService: paymentService,
-    })
-    workflow.AddCompensation("payment", &RefundPaymentStage{
-        paymentService: paymentService,
-    })
-    
-    workflow.AddStage("inventory", &ReserveInventoryStage{
-        inventory: inventoryService,
-    })
-    workflow.AddCompensation("inventory", &ReleaseInventoryStage{
-        inventory: inventoryService,
-    })
-    
-    workflow.AddStage("shipping", &CreateShipmentStage{
-        shipping: shippingService,
-    })
-    
-    // Execute
-    context := &OrderFulfillmentContext{
-        OrderID:    orderID,
-        CustomerID: order.CustomerID,
-        Items:      order.Items,
+    err := s.inventoryService.ReserveItems(ctx, wfCtx.OrderID, wfCtx.Items)
+    if err != nil {
+        return fmt.Errorf("inventory reservation failed: %w", err)
     }
     
-    result, err := workflow.Execute(ctx, context)
+    wfCtx.InventoryReserved = true
+    log.Printf("Inventory reserved successfully for order: %s", wfCtx.OrderID)
+    return nil
+}
+
+func (s *ReserveInventoryStage) GetStageID() string {
+    return "reserve-inventory"
+}
+
+// Compensation for inventory reservation
+type ReleaseInventoryCompensation struct {
+    inventoryService InventoryService
+}
+
+func (c *ReleaseInventoryCompensation) Compensate(ctx context.Context, 
+    wfCtx *OrderFulfillmentContext, stageErr error) error {
+    log.Printf("COMPENSATION: Releasing inventory for order %s (error: %v)", 
+        wfCtx.OrderID, stageErr)
+    
+    if !wfCtx.InventoryReserved {
+        log.Printf("No inventory to release for order: %s", wfCtx.OrderID)
+        return nil
+    }
+    
+    err := c.inventoryService.ReleaseItems(ctx, wfCtx.OrderID)
+    if err != nil {
+        return fmt.Errorf("compensation failed - could not release inventory for order %s: %w", 
+            wfCtx.OrderID, err)
+    }
+    
+    // Clear inventory state
+    wfCtx.InventoryReserved = false
+    log.Printf("Inventory compensation completed for order: %s", wfCtx.OrderID)
+    return nil
+}
+
+func (c *ReleaseInventoryCompensation) GetStageID() string {
+    return "release-inventory"
+}
+
+type CreateShipmentStage struct {
+    shippingService ShippingService
+}
+
+func (s *CreateShipmentStage) Execute(ctx context.Context, wfCtx *OrderFulfillmentContext) error {
+    log.Printf("Creating shipment for order: %s", wfCtx.OrderID)
+    
+    shipmentID, trackingNumber, err := s.shippingService.CreateShipment(ctx, ShipmentRequest{
+        OrderID:    wfCtx.OrderID,
+        CustomerID: wfCtx.CustomerID,
+        Items:      wfCtx.Items,
+    })
+    if err != nil {
+        return fmt.Errorf("shipment creation failed: %w", err)
+    }
+    
+    wfCtx.ShipmentID = shipmentID
+    wfCtx.TrackingNumber = trackingNumber
+    log.Printf("Shipment created successfully: %s (tracking: %s)", shipmentID, trackingNumber)
+    return nil
+}
+
+func (s *CreateShipmentStage) GetStageID() string {
+    return "create-shipment"
+}
+
+// Workflow setup with queue-based compensation
+func SetupOrderWorkflow(engine *stageflow.StageFlowEngine) error {
+    // Create typed workflow with compensation support
+    workflow := stageflow.NewTypedWorkflow[*OrderFulfillmentContext](
+        "order-fulfillment", 
+        "Order Fulfillment Workflow").
+        AddTypedStage("validate", &ValidateOrderStage{}).
+        AddTypedStage("payment", &ProcessPaymentStage{
+            paymentService: paymentService,
+        }).
+            WithCompensation(&RefundPaymentCompensation{
+                paymentService: paymentService,
+            }).
+        AddTypedStage("inventory", &ReserveInventoryStage{
+            inventoryService: inventoryService,
+        }).
+            WithCompensation(&ReleaseInventoryCompensation{
+                inventoryService: inventoryService,
+            }).
+        AddTypedStage("shipping", &CreateShipmentStage{
+            shippingService: shippingService,
+        }).
+        Build()
+    
+    // Register workflow with engine (enables queue-based execution)
+    return engine.RegisterWorkflow(workflow)
+}
+
+// Execute workflow via StageFlow engine (queue-based)
+func ProcessOrderAsync(ctx context.Context, engine *stageflow.StageFlowEngine, 
+    orderID string, customerID string, items []OrderItem) error {
+    
+    // Create workflow context
+    orderContext := &OrderFulfillmentContext{
+        OrderID:    orderID,
+        CustomerID: customerID,
+        Items:      items,
+    }
+    
+    // Start workflow execution (returns immediately, processes asynchronously via queues)
+    state, err := stageflow.ExecuteTyped(workflow, ctx, orderContext)
+    if err != nil {
+        return fmt.Errorf("failed to start workflow: %w", err)
+    }
+    
+    log.Printf("Order workflow started: %s (instance: %s)", orderID, state.InstanceID)
+    
+    // Workflow continues processing asynchronously via stage queues
+    // Compensation will be handled automatically via compensation queue if needed
+    return nil
+}
+
+// Direct execution (synchronous) - for testing or simple cases
+func ProcessOrderSync(ctx context.Context, orderID string, customerID string, items []OrderItem) error {
+    // Create workflow
+    workflow := stageflow.NewTypedWorkflow[*OrderFulfillmentContext](
+        "order-fulfillment-sync", 
+        "Synchronous Order Fulfillment").
+        AddTypedStage("validate", &ValidateOrderStage{}).
+        AddTypedStage("payment", &ProcessPaymentStage{
+            paymentService: paymentService,
+        }).
+            WithCompensation(&RefundPaymentCompensation{
+                paymentService: paymentService,
+            }).
+        AddTypedStage("inventory", &ReserveInventoryStage{
+            inventoryService: inventoryService,
+        }).
+            WithCompensation(&ReleaseInventoryCompensation{
+                inventoryService: inventoryService,
+            }).
+        AddTypedStage("shipping", &CreateShipmentStage{
+            shippingService: shippingService,
+        }).
+        Build()
+    
+    // Create context
+    orderContext := &OrderFulfillmentContext{
+        OrderID:    orderID,
+        CustomerID: customerID,
+        Items:      items,
+    }
+    
+    // Execute synchronously
+    result, err := workflow.Execute(ctx, orderContext)
     if err != nil {
         log.Printf("Workflow failed: %v", err)
+        if result != nil && len(result.Compensations) > 0 {
+            log.Printf("Compensations executed: %v", result.Compensations)
+        }
         return err
     }
     
@@ -396,6 +578,15 @@ func ProcessOrder(ctx context.Context, orderID string) error {
     return nil
 }
 ```
+
+**Key Features of Go Compensation Implementation:**
+
+1. **Queue-Based Architecture**: Compensation runs asynchronously via dedicated `stageflow.compensation.{workflowId}` queues
+2. **TypedCompensationHandler Interface**: Type-safe compensation handlers with proper error handling  
+3. **Automatic Rollback**: Failed workflows trigger automatic compensation in reverse stage order
+4. **Resilient Processing**: Compensation messages persist in queues, surviving pod crashes
+5. **Event Publishing**: `WorkflowCompensatedEvent` published when compensation completes
+6. **Both Sync and Async**: Supports both direct execution and queue-based execution via StageFlowEngine
 
 ## Interceptor Example
 
@@ -406,68 +597,46 @@ import (
     "context"
     "time"
     "github.com/glimte/mmate-go/interceptors"
-    "github.com/prometheus/client_golang/prometheus"
+    "github.com/glimte/mmate-go/contracts"
 )
 
-// Metrics interceptor
-type MetricsInterceptor struct {
-    messagesProcessed *prometheus.CounterVec
-    processingDuration *prometheus.HistogramVec
-}
+// Using the built-in metrics collector from monitor package
+import (
+    "github.com/glimte/mmate-go/monitor"
+    "github.com/glimte/mmate-go/interceptors"
+)
 
-func NewMetricsInterceptor() *MetricsInterceptor {
-    return &MetricsInterceptor{
-        messagesProcessed: prometheus.NewCounterVec(
-            prometheus.CounterOpts{
-                Name: "mmate_messages_processed_total",
-                Help: "Total number of messages processed",
-            },
-            []string{"message_type", "status"},
-        ),
-        processingDuration: prometheus.NewHistogramVec(
-            prometheus.HistogramOpts{
-                Name: "mmate_processing_duration_seconds",
-                Help: "Message processing duration",
-                Buckets: prometheus.DefBuckets,
-            },
-            []string{"message_type"},
-        ),
-    }
-}
-
-func (i *MetricsInterceptor) Intercept(ctx context.Context, 
-    msg contracts.Message, next interceptors.Handler) error {
+func setupMetrics() {
+    // Use the monitor package's SimpleMetricsCollector
+    collector := monitor.NewSimpleMetricsCollector()
+    metricsInterceptor := interceptors.NewMetricsInterceptor(collector)
     
-    start := time.Now()
-    messageType := msg.GetType()
+    // Use in pipeline
+    pipeline := interceptors.NewPipeline(
+        metricsInterceptor,
+        // other interceptors...
+    )
     
-    err := next(ctx, msg)
-    
-    duration := time.Since(start).Seconds()
-    status := "success"
-    if err != nil {
-        status = "error"
-    }
-    
-    i.messagesProcessed.WithLabelValues(messageType, status).Inc()
-    i.processingDuration.WithLabelValues(messageType).Observe(duration)
-    
-    return err
+    // Later, get metrics summary
+    summary := collector.GetMetricsSummary()
+    fmt.Printf("Message counts: %v\n", summary.MessageCounts)
+    fmt.Printf("Processing stats: %v\n", summary.ProcessingStats)
 }
 
 // Usage
 func main() {
-    // Create interceptor pipeline
-    pipeline := interceptors.NewPipeline(
-        NewMetricsInterceptor(),
-        NewLoggingInterceptor(),
-        NewTracingInterceptor(),
-    )
+    // Setup metrics collection
+    setupMetrics()
     
-    // Apply to subscriber
-    subscriber := messaging.NewMessageSubscriber(
-        transport,
-        messaging.WithInterceptors(pipeline))
+    // Or use the built-in simple metrics collector
+    client, err := mmate.NewClientWithOptions(connectionString,
+        mmate.WithDefaultMetrics())
+    
+    // Get metrics summary
+    summary := client.GetMetricsSummary()
+    if summary != nil {
+        fmt.Printf("Messages processed: %v\n", summary.MessageCounts)
+    }
 }
 ```
 

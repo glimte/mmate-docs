@@ -16,7 +16,8 @@ All messages are wrapped in a JSON envelope with the following structure:
   "headers": {
     "userId": "user-456",
     "tenantId": "tenant-789",
-    "source": "web-api"
+    "source": "web-api",
+    "x-schema-version": "1.0"
   },
   "payload": {
     // Message-specific content
@@ -181,6 +182,12 @@ Pattern: `stageflow.{workflowId}.stage{index}`
 - Example: `stageflow.order-processing.stage1`
 - Example: `stageflow.payment-flow.stage3`
 
+### StageFlow Compensation Queues
+Pattern: `stageflow.compensation.{workflowId}`
+- Example: `stageflow.compensation.order-processing`
+- Example: `stageflow.compensation.payment-flow`
+- Used for queue-based compensation messaging
+
 ## Exchange Configuration
 
 ### Topic Exchange
@@ -274,6 +281,18 @@ Messages sent to DLQ include:
 | `Dictionary<K,V>` | `map[K]V` | object | `{"key": "value"}` |
 
 ## Versioning Strategy
+
+### Schema Version in Headers
+All messages SHOULD include schema version in headers:
+- Header: `x-schema-version`
+- Format: Semantic versioning (e.g., `1.0`, `2.1`)
+- Example: `"x-schema-version": "1.0"`
+
+This allows:
+- Version-aware routing
+- Schema validation
+- Gradual migration
+- Backward compatibility
 
 ### Message Type Versioning
 - Include version in type name: `CreateOrderCommandV2`

@@ -603,15 +603,93 @@ type ShippingArrangedReply struct {
     ShippingCost      float64   `json:"shippingCost"`
 }
 
-// Workflow setup and execution
+// Compensation stage implementations for Go
+type ReleaseInventoryCompensation struct {
+    bridge *bridge.SyncAsyncBridge
+    logger *slog.Logger
+}
+
+func (c *ReleaseInventoryCompensation) Compensate(ctx context.Context, order *OrderFulfillmentContext, stageError error) error {
+    c.logger.Warn("Compensating: Releasing inventory", "orderId", order.OrderID, "error", stageError.Error())
+    
+    if !order.InventoryReserved || len(order.ReservedItems) == 0 {
+        c.logger.Info("No inventory to release")
+        return nil
+    }
+    
+    // Create release command using actual contracts
+    cmd := &ReleaseInventoryCommand{
+        BaseCommand: contracts.BaseCommand{
+            BaseMessage: contracts.BaseMessage{
+                Type:      "ReleaseInventoryCommand",
+                ID:        fmt.Sprintf("inv-release-%d", time.Now().UnixNano()),
+                Timestamp: time.Now(),
+            },
+            TargetService: "inventory-service",
+        },
+        OrderID:        order.OrderID,
+        ReservationIDs: order.ReservedItems,
+        Reason:         fmt.Sprintf("Workflow compensation: %s", stageError.Error()),
+    }
+    
+    // Use Bridge for reliable external service call
+    _, err := bridge.RequestCommandTyped[*InventoryReleasedReply](c.bridge, ctx, cmd, 10*time.Second)
+    if err != nil {
+        c.logger.Error("Failed to release inventory during compensation", "error", err)
+        return fmt.Errorf("compensation failed: %w", err)
+    }
+    
+    // Update context to reflect compensation
+    order.InventoryReserved = false
+    order.ReservedItems = nil
+    
+    c.logger.Info("Inventory successfully released during compensation")
+    return nil
+}
+
+func (c *ReleaseInventoryCompensation) GetStageID() string {
+    return "release-inventory"
+}
+
+type RefundPaymentCompensation struct {
+    logger *slog.Logger
+}
+
+func (c *RefundPaymentCompensation) Compensate(ctx context.Context, order *OrderFulfillmentContext, stageError error) error {
+    c.logger.Warn("Compensating: Refunding payment", "orderId", order.OrderID, "error", stageError.Error())
+    
+    if !order.PaymentProcessed || order.PaymentTransactionID == "" {
+        c.logger.Info("No payment to refund")
+        return nil
+    }
+    
+    // Simulate refund processing (in real implementation, use external service)
+    c.logger.Info("Processing refund", "transactionId", order.PaymentTransactionID, "amount", order.TotalAmount)
+    time.Sleep(2 * time.Second) // Simulate external API call
+    
+    // Update context to reflect compensation
+    order.PaymentProcessed = false
+    order.PaymentTransactionID = ""
+    
+    c.logger.Info("Payment successfully refunded during compensation")
+    return nil
+}
+
+func (c *RefundPaymentCompensation) GetStageID() string {
+    return "refund-payment"
+}
+
+// Workflow setup and execution with compensation support
 func SetupOrderFulfillmentWorkflow(engine *stageflow.StageFlowEngine, integrationBridge *bridge.SyncAsyncBridge) error {
     logger := slog.Default()
     
-    // Create typed workflow using actual API
+    // Create typed workflow with compensation handlers
     workflow := stageflow.NewTypedWorkflow[*OrderFulfillmentContext]("order-fulfillment", "Order Fulfillment Workflow").
         AddTypedStage("validate-order", &ValidateOrderStage{logger: logger}).
         AddTypedStage("check-inventory", &CheckInventoryStage{bridge: integrationBridge, logger: logger}).
+            WithCompensation(&ReleaseInventoryCompensation{bridge: integrationBridge, logger: logger}).
         AddTypedStage("process-payment", &ProcessPaymentStage{logger: logger}).
+            WithCompensation(&RefundPaymentCompensation{logger: logger}).
         AddTypedStage("arrange-shipping", &ArrangeShippingStage{bridge: integrationBridge, logger: logger}).
         Build()
     

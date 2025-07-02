@@ -33,9 +33,14 @@ dotnet add package Mmate.Schema
 
 ### Installing Command Line Tools
 
+Mmate CLI tools are distributed separately from the [mmate-toolbox repository](https://github.com/glimte/mmate-toolbox):
+
 ```bash
 # Monitoring tool
-dotnet tool install --global Mmate.Monitor
+dotnet tool install --global MmateToolbox.Monitor
+
+# TUI Dashboard (optional)
+dotnet tool install --global MmateToolbox.Tui
 ```
 
 ## Quick Start Example
@@ -484,20 +489,20 @@ public class HealthCheckService : IHealthCheck
 
 ## Monitoring Your Application
 
-Use the Mmate.Monitor CLI tool to monitor your queues:
+Use the standalone CLI tools from [mmate-toolbox](https://github.com/glimte/mmate-toolbox) to monitor your queues:
 
 ```bash
 # List all queues
-mmate-monitor queue list -c "amqp://guest:guest@localhost:5672/"
+mmate monitor queues --url "amqp://guest:guest@localhost:5672/"
 
 # Watch a specific queue
-mmate-monitor watch myapp.orders -c "amqp://guest:guest@localhost:5672/"
+mmate monitor queue myapp.orders --watch --url "amqp://guest:guest@localhost:5672/"
 
 # Check dead letter queues
-mmate-monitor dlq list -c "amqp://guest:guest@localhost:5672/"
+mmate monitor dlq --url "amqp://guest:guest@localhost:5672/"
 
-# Requeue messages from DLQ
-mmate-monitor dlq requeue myapp.orders.dlq -c "amqp://guest:guest@localhost:5672/"
+# Start TUI dashboard
+mmate-tui --url "amqp://guest:guest@localhost:5672/"
 ```
 
 ## Testing Your Handlers

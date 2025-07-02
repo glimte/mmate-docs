@@ -1,6 +1,6 @@
 # CLI Monitor
 
-The Mmate CLI monitor provides command-line access to monitoring and management functions.
+The Mmate CLI monitor provides command-line access to monitoring and management functions. This tool is distributed as a standalone utility from the [mmate-toolbox repository](https://github.com/glimte/mmate-toolbox).
 
 ## Installation
 
@@ -13,19 +13,21 @@ The Mmate CLI monitor provides command-line access to monitoring and management 
 <td>
 
 ```bash
-dotnet tool install -g Mmate.Monitor
+dotnet tool install -g MmateToolbox.Monitor
 ```
 
 </td>
 <td>
 
 ```bash
-go install github.com/glimte/mmate-go/cmd/monitor@latest
+go install github.com/glimte/mmate-toolbox/cmd/monitor@latest
 ```
 
 </td>
 </tr>
 </table>
+
+> **Note**: These tools are maintained separately from the main Mmate implementation libraries. Visit the [mmate-toolbox repository](https://github.com/glimte/mmate-toolbox) for the latest releases and documentation.
 
 ## Usage
 
@@ -185,9 +187,6 @@ mmate monitor export --format json --output metrics.json
 # Export to CSV
 mmate monitor export --format csv --output queues.csv
 
-# Export for Prometheus
-mmate monitor export --format prometheus
-
 # Export specific data
 mmate monitor export --data queues --format json
 mmate monitor export --data consumers --format csv
@@ -319,8 +318,8 @@ fi
 
 **Export metrics to monitoring system:**
 ```bash
-# Prometheus format
-mmate monitor export --format prometheus | curl -X POST http://pushgateway:9091/metrics/job/mmate
+# JSON format for external processing
+mmate monitor export --format json | jq '.queues[] | select(.messages > 100)'
 ```
 
 ## Configuration

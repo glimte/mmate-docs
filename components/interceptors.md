@@ -209,6 +209,19 @@ pipeline = interceptors.NewPipeline(
     &LoggingInterceptor{},    // Third
 )
 
+// Using builder pattern with new features
+builder := interceptors.NewDefaultInterceptorChainBuilder(logger)
+    .WithContextEnrichment(&UserEnricher{})           // Enrich context first
+    .WithFiltering(typeFilter, interceptors.SkipSilently) // Filter messages
+    .WithDuplicateDetection(duplicateDetector)        // Prevent duplicates
+    .WithCaching(cache)                                // Cache responses
+    .WithAuthentication(authenticator)                // Security check
+    .WithValidation(validator)                         // Validate messages
+    .WithMetrics(metricsCollector)                    // Collect metrics
+    .WithLogging()                                     // Log everything
+
+chain := builder.Build()
+
 // Apply to subscriber
 subscriber := messaging.NewSubscriber(
     transport,
@@ -1457,6 +1470,215 @@ Skip expensive interceptors when not needed:
    - Support enabling/disabling
    - Allow runtime changes
    - Document configuration options
+
+## Advanced Features (Go Implementation)
+
+### Message Filtering and Conditional Execution
+
+Filter messages based on conditions to skip processing when appropriate:
+
+```go
+// Message type filter - only process specific message types
+typeFilter := interceptors.NewMessageTypeFilter(
+    "OrderCreatedEvent", 
+    "OrderUpdatedEvent",
+    "OrderDeletedEvent",
+)
+
+pipeline.Use(interceptors.NewFilteringInterceptor(
+    typeFilter,
+    interceptors.SkipSilently, // or SkipWithError, SkipWithLog
+))
+
+// Composite filter - combine multiple conditions (AND logic)
+compositeFilter := interceptors.NewCompositeFilter(
+    typeFilter,
+    interceptors.MessageFilterFunc(func(ctx context.Context, msg contracts.Message) (bool, error) {
+        // Custom filter logic
+        return msg.GetHeader("priority") == "high", nil
+    }),
+)
+
+// OR filter - at least one condition must match
+orFilter := interceptors.NewOrFilter(
+    interceptors.NewMessageTypeFilter("CommandA"),
+    interceptors.NewMessageTypeFilter("CommandB"),
+)
+
+// Conditional interceptor - apply interceptor only when condition is met
+pipeline.UseConditional(
+    interceptors.MessageFilterFunc(func(ctx context.Context, msg contracts.Message) (bool, error) {
+        return msg.GetHeader("validate-deep") != "", nil
+    }),
+    &ExpensiveValidationInterceptor{},
+)
+
+// Context-based filtering
+contextFilter := interceptors.NewContextBasedFilter("userRole", "admin")
+pipeline.Use(interceptors.NewFilteringInterceptor(
+    contextFilter,
+    interceptors.SkipWithError,
+))
+```
+
+### Context Enrichment Between Interceptors
+
+Share data between interceptors using thread-safe context:
+
+```go
+// Context enrichment interceptor
+type UserEnricher struct{}
+
+func (e *UserEnricher) Enrich(ctx context.Context, ic *interceptors.InterceptorContext, msg contracts.Message) error {
+    userID := msg.GetHeader("userId")
+    if userID != "" {
+        // Fetch user details (example)
+        user, err := fetchUser(userID)
+        if err != nil {
+            return err
+        }
+        
+        // Store in interceptor context
+        ic.Set("user", user)
+        ic.Set("userRole", user.Role)
+        ic.Set("userTenant", user.TenantID)
+    }
+    return nil
+}
+
+// Use in pipeline
+pipeline.Use(interceptors.NewContextEnrichmentInterceptor(&UserEnricher{}))
+
+// Access enriched data in subsequent interceptors
+type TenantValidationInterceptor struct{}
+
+func (i *TenantValidationInterceptor) Intercept(ctx context.Context, msg contracts.Message, next interceptors.MessageHandler) error {
+    ic, exists := interceptors.GetInterceptorContext(ctx)
+    if !exists {
+        return errors.New("no interceptor context")
+    }
+    
+    userTenant, ok := ic.GetString("userTenant")
+    if !ok {
+        return errors.New("user tenant not found")
+    }
+    
+    // Validate tenant access
+    if !hasAccess(userTenant, msg) {
+        return errors.New("tenant access denied")
+    }
+    
+    return next.Handle(ctx, msg)
+}
+```
+
+### Short-Circuit Support
+
+Stop the interceptor chain early based on conditions:
+
+```go
+// Short-circuit based on custom logic
+type CacheEvaluator struct {
+    cache Cache
+}
+
+func (e *CacheEvaluator) ShouldShortCircuit(ctx context.Context, msg contracts.Message) (bool, *interceptors.ShortCircuitResult, error) {
+    if query, ok := msg.(contracts.Query); ok {
+        cached, found := e.cache.Get(query.GetID())
+        if found {
+            return true, &interceptors.ShortCircuitResult{
+                Result: cached,
+                Reason: "cache hit",
+            }, nil
+        }
+    }
+    return false, nil, nil
+}
+
+pipeline.Use(interceptors.NewShortCircuitInterceptor(&CacheEvaluator{}))
+
+// Built-in caching interceptor
+pipeline.Use(interceptors.NewCachingInterceptor(cache))
+
+// Duplicate detection - prevent processing same message twice
+pipeline.Use(interceptors.NewDuplicateDetectionInterceptor(duplicateDetector))
+
+// Short-circuit on specific errors
+type ErrorEvaluator struct{}
+
+func (e *ErrorEvaluator) ShouldShortCircuitOnError(err error) (bool, *interceptors.ShortCircuitResult) {
+    var validationErr *ValidationError
+    if errors.As(err, &validationErr) {
+        // Don't retry validation errors
+        return true, &interceptors.ShortCircuitResult{
+            Result: nil,
+            Reason: "validation error - no retry",
+        }
+    }
+    return false, nil
+}
+
+pipeline.Use(interceptors.NewShortCircuitOnErrorInterceptor(&ErrorEvaluator{}))
+
+// Check if error is short-circuit in handler
+err := pipeline.Execute(ctx, msg, handler)
+if err != nil {
+    if interceptors.IsShortCircuit(err) {
+        result, ok := interceptors.GetShortCircuitResult(err)
+        if ok && result.Result != nil {
+            // Use cached/short-circuited result
+            return result.Result, nil
+        }
+    }
+    return nil, err
+}
+```
+
+### Complete Example with All Features
+
+```go
+// Create enhanced pipeline with all features
+pipeline := interceptors.NewPipeline()
+
+// 1. Context enrichment - runs first to enrich context
+pipeline.Use(interceptors.NewContextEnrichmentInterceptor(&UserEnricher{}))
+
+// 2. Security check with context-based filtering
+pipeline.Use(interceptors.NewFilteringInterceptor(
+    interceptors.NewContextBasedFilter("userRole", "admin"),
+    interceptors.SkipWithError,
+))
+
+// 3. Duplicate detection - short-circuit if already processed
+pipeline.Use(interceptors.NewDuplicateDetectionInterceptor(duplicateDetector))
+
+// 4. Caching - short-circuit on cache hit
+pipeline.Use(interceptors.NewCachingInterceptor(cache))
+
+// 5. Conditional expensive validation
+pipeline.UseConditional(
+    interceptors.MessageFilterFunc(func(ctx context.Context, msg contracts.Message) (bool, error) {
+        ic, _ := interceptors.GetInterceptorContext(ctx)
+        deepValidate, _ := ic.GetString("deepValidate")
+        return deepValidate == "true", nil
+    }),
+    &ExpensiveValidationInterceptor{},
+)
+
+// 6. Metrics - always run
+pipeline.Use(&MetricsInterceptor{})
+
+// Execute with short-circuit handling
+err := pipeline.Execute(ctx, msg, handler)
+if err != nil {
+    if interceptors.IsShortCircuit(err) {
+        // Handle short-circuit case
+        log.Printf("Pipeline short-circuited: %v", err)
+        return nil
+    }
+    return err
+}
+```
 
 ## Common Patterns
 

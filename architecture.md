@@ -53,6 +53,38 @@ Mmate implements several messaging patterns:
 6. Handler processes message
 7. Acknowledgment sent to broker
 
+#### StageFlow Compensation Flow
+1. Workflow stage fails during execution
+2. CompensationMessageEnvelope created with:
+   - Failed stage information
+   - Workflow context and completed stages
+   - Error details for compensation logic
+3. Message published to `stageflow.compensation.{workflowId}` queue
+4. Compensation handler processes stages in reverse order
+5. Each compensation stage undoes its corresponding operation
+6. WorkflowCompensatedEvent published on completion
+
+```
+Normal Flow:
+┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐
+│ Stage 1 │───▶│ Stage 2 │───▶│ Stage 3 │───▶│ Stage 4 │
+└─────────┘    └─────────┘    └─────────┘    └─────────┘
+
+Compensation Flow (Stage 3 fails):
+┌─────────┐    ┌─────────┐    ┌─────────┐
+│ Stage 1 │    │ Stage 2 │    │ Stage 3 │ ❌ FAIL
+└─────────┘    └─────────┘    └─────────┘
+     ▲              ▲
+     │              │
+┌─────────────────────────────────────────┐
+│    Compensation Queue Processing        │
+│  ┌─────────────┐    ┌─────────────┐    │
+│  │ Compensate  │◀───│ Compensate  │    │
+│  │  Stage 2    │    │  Stage 1    │    │
+│  └─────────────┘    └─────────────┘    │
+└─────────────────────────────────────────┘
+```
+
 ## Platform-Specific Architecture
 
 ### .NET Implementation

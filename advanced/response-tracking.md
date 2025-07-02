@@ -966,34 +966,21 @@ public class ResponseTrackingMetrics
 <td>
 
 ```go
+// Using monitor package for response tracking metrics
+import "github.com/glimte/mmate-go/monitor"
+
+// Extend the SimpleMetricsCollector for response tracking
 type ResponseTrackingMetrics struct {
-    responseTime    *prometheus.HistogramVec
-    timeouts        *prometheus.CounterVec
-    orphanResponses prometheus.Counter
+    *monitor.SimpleMetricsCollector
+    timeouts        map[string]int64
+    orphanResponses int64
+    mu              sync.RWMutex
 }
 
 func NewResponseTrackingMetrics() *ResponseTrackingMetrics {
     return &ResponseTrackingMetrics{
-        responseTime: prometheus.NewHistogramVec(
-            prometheus.HistogramOpts{
-                Name: "mmate_response_time_seconds",
-                Help: "Response time in seconds",
-            },
-            []string{"type", "success"},
-        ),
-        timeouts: prometheus.NewCounterVec(
-            prometheus.CounterOpts{
-                Name: "mmate_response_timeouts_total",
-                Help: "Total number of response timeouts",
-            },
-            []string{"type"},
-        ),
-        orphanResponses: prometheus.NewCounter(
-            prometheus.CounterOpts{
-                Name: "mmate_orphaned_responses_total",
-                Help: "Total number of orphaned responses",
-            },
-        ),
+        SimpleMetricsCollector: monitor.NewSimpleMetricsCollector(),
+        timeouts:              make(map[string]int64),
     }
 }
 
@@ -1001,11 +988,26 @@ func (m *ResponseTrackingMetrics) RecordResponseTime(
     messageType string,
     duration time.Duration,
     success bool) {
+    // Use the embedded SimpleMetricsCollector
+    m.RecordProcessingTime(messageType, duration)
     
-    m.responseTime.WithLabelValues(
-        messageType,
-        fmt.Sprintf("%t", success),
-    ).Observe(duration.Seconds())
+    if !success {
+        m.IncrementErrorCount(messageType, "response_failure")
+    }
+}
+
+func (m *ResponseTrackingMetrics) RecordTimeout(messageType string) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    
+    m.timeouts[messageType]++
+}
+
+func (m *ResponseTrackingMetrics) RecordOrphanResponse() {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    
+    m.orphanResponses++
 }
 ```
 

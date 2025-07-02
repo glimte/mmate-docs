@@ -404,6 +404,12 @@ type Stage[T any] interface {
 type CompensationStage[T any] interface {
     Compensate(ctx context.Context, context T, stageError error) error
 }
+
+// TypedCompensationHandler for typed workflows
+type TypedCompensationHandler[T any] interface {
+    Compensate(ctx context.Context, context T, stageError error) error
+    GetStageID() string
+}
 ```
 
 ### FlowResult
@@ -416,6 +422,38 @@ type FlowResult struct {
     Error         error         `json:"error,omitempty"`
     FailedStage   string        `json:"failedStage,omitempty"`
     Compensations []string      `json:"compensations,omitempty"`
+}
+```
+
+### Compensation Workflow Types
+
+```go
+// CompensationMessageEnvelope wraps compensation messages
+type CompensationMessageEnvelope struct {
+    WorkflowID       string                 `json:"workflowId"`
+    WorkflowInstance string                 `json:"workflowInstance"`
+    FailedStage      string                 `json:"failedStage"`
+    Error           string                 `json:"error"`
+    Context         map[string]interface{} `json:"context"`
+    CompletedStages []StageCompletionInfo  `json:"completedStages"`
+    Timestamp       time.Time              `json:"timestamp"`
+}
+
+// StageCompletionInfo tracks completed stages for compensation
+type StageCompletionInfo struct {
+    StageID     string    `json:"stageId"`
+    CompletedAt time.Time `json:"completedAt"`
+    Result      string    `json:"result,omitempty"`
+}
+
+// WorkflowCompensatedEvent published when compensation completes
+type WorkflowCompensatedEvent struct {
+    BaseEvent
+    WorkflowID       string    `json:"workflowId"`
+    WorkflowInstance string    `json:"workflowInstance"`
+    FailedStage      string    `json:"failedStage"`
+    CompensatedAt    time.Time `json:"compensatedAt"`
+    CompensationStages []string `json:"compensationStages"`
 }
 ```
 
@@ -513,10 +551,10 @@ func NewLoggingInterceptor(logger *slog.Logger) *LoggingInterceptor
 
 // Metrics interceptor
 type MetricsInterceptor struct {
-    registry *prometheus.Registry
+    collector MetricsCollector
 }
 
-func NewMetricsInterceptor(registry *prometheus.Registry) *MetricsInterceptor
+func NewMetricsInterceptor(collector MetricsCollector) *MetricsInterceptor
 
 // Validation interceptor
 type ValidationInterceptor struct{}

@@ -1086,7 +1086,6 @@ mmate monitor dlq --requeue=dlq.orders --count=100
 mmate monitor perf --period=1h
 
 # Export metrics
-mmate monitor export --format=prometheus
 mmate monitor export --format=json --output=metrics.json
 ```
 
@@ -1226,131 +1225,7 @@ func NewAlertManager() *AlertManager {
 
 ## Integration with Monitoring Systems
 
-### Prometheus
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-// Configure Prometheus
-services.AddSingleton<IMetricServer>(sp =>
-{
-    var server = new MetricServer(port: 9090);
-    server.Start();
-    return server;
-});
-
-// Custom metrics
-public class PrometheusMetrics
-{
-    private readonly Counter _messagesProcessed;
-    private readonly Histogram _processingDuration;
-    private readonly Gauge _queueDepth;
-    
-    public PrometheusMetrics()
-    {
-        _messagesProcessed = Metrics
-            .CreateCounter("mmate_messages_processed_total",
-                "Total messages processed",
-                new CounterConfiguration
-                {
-                    LabelNames = new[] { "queue", "type", "status" }
-                });
-        
-        _processingDuration = Metrics
-            .CreateHistogram("mmate_processing_duration_seconds",
-                "Message processing duration",
-                new HistogramConfiguration
-                {
-                    LabelNames = new[] { "queue", "type" },
-                    Buckets = Histogram.ExponentialBuckets(0.001, 2, 10)
-                });
-        
-        _queueDepth = Metrics
-            .CreateGauge("mmate_queue_depth",
-                "Current queue depth",
-                new GaugeConfiguration
-                {
-                    LabelNames = new[] { "queue" }
-                });
-    }
-}
-```
-
-</td>
-<td>
-
-```go
-// Prometheus metrics
-var (
-    messagesProcessed = prometheus.NewCounterVec(
-        prometheus.CounterOpts{
-            Name: "mmate_messages_processed_total",
-            Help: "Total messages processed",
-        },
-        []string{"queue", "type", "status"},
-    )
-    
-    processingDuration = prometheus.NewHistogramVec(
-        prometheus.HistogramOpts{
-            Name:    "mmate_processing_duration_seconds",
-            Help:    "Message processing duration",
-            Buckets: prometheus.ExponentialBuckets(0.001, 2, 10),
-        },
-        []string{"queue", "type"},
-    )
-    
-    queueDepth = prometheus.NewGaugeVec(
-        prometheus.GaugeOpts{
-            Name: "mmate_queue_depth",
-            Help: "Current queue depth",
-        },
-        []string{"queue"},
-    )
-)
-
-func init() {
-    prometheus.MustRegister(messagesProcessed)
-    prometheus.MustRegister(processingDuration)
-    prometheus.MustRegister(queueDepth)
-}
-
-// Expose metrics
-http.Handle("/metrics", promhttp.Handler())
-```
-
-</td>
-</tr>
-</table>
-
-### Grafana Dashboard
-
-Example Grafana queries:
-
-```promql
-# Message rate
-rate(mmate_messages_processed_total[5m])
-
-# Error rate
-rate(mmate_messages_processed_total{status="error"}[5m]) / 
-rate(mmate_messages_processed_total[5m])
-
-# Processing latency
-histogram_quantile(0.95,
-  rate(mmate_processing_duration_seconds_bucket[5m]))
-
-# Queue depth over time
-mmate_queue_depth
-
-# Consumer lag
-mmate_queue_depth{queue=~".*"} / 
-rate(mmate_messages_processed_total{queue=~".*"}[5m])
-```
+Mmate provides metrics in a format that can be consumed by various monitoring systems. The metrics include message processing counts, processing times, error rates, and queue depths.
 
 ## Service-Scoped Monitoring
 
@@ -1447,8 +1322,7 @@ brokerHealth, err := serviceMonitor.BrokerHealth(ctx)
       └────────────────────┼────────────────────┘
                           │
                ┌─────────────────┐
-               │ Monitoring Tool │
-               │  (Prometheus)   │  ← Scrapes all service endpoints
+               │ Monitoring Tool │  ← Collects from all service endpoints
                └─────────────────┘
 ```
 
@@ -1553,7 +1427,7 @@ serviceQueues, err := serviceMonitor.ServiceOwnedQueues(ctx)
 
 ## Next Steps
 
-- Set up [Prometheus Integration](#prometheus)
+- Set up monitoring integration
 - Create [Grafana Dashboards](#grafana-dashboard)
 - Configure [Alerts](#alert-configuration)
 - Review [Performance Tuning](../../advanced/performance.md)
