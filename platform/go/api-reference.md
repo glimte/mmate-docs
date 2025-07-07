@@ -9,6 +9,7 @@ This document provides a complete API reference for the Mmate Go framework.
 - [StageFlow](#stageflow)
 - [Bridge](#bridge)
 - [Interceptors](#interceptors)
+- [Enterprise Features](#enterprise-features)
 - [Monitoring](#monitoring)
 - [Health](#health)
 
@@ -445,6 +446,259 @@ type StageCompletionInfo struct {
     CompletedAt time.Time `json:"completedAt"`
     Result      string    `json:"result,omitempty"`
 }
+```
+
+## Enterprise Features
+
+### TTL Retry Scheduler
+
+Persistent retry scheduling using RabbitMQ Dead Letter Exchange (DLX) mechanism.
+
+```go
+// TTLRetryScheduler provides persistent retry scheduling
+type TTLRetryScheduler struct {
+    channelPool      *rabbitmq.ChannelPool
+    topologyManager  *rabbitmq.TopologyManager
+    logger          *slog.Logger
+    retryExchange   string
+    delayExchange   string
+}
+
+// TTLRetrySchedulerOptions configures the TTL retry scheduler
+type TTLRetrySchedulerOptions struct {
+    RetryExchange string
+    DelayExchange string
+    Logger        *slog.Logger
+}
+
+// Create TTL retry scheduler
+func NewTTLRetryScheduler(pool *rabbitmq.ChannelPool, opts *TTLRetrySchedulerOptions) *TTLRetryScheduler
+
+// Initialize TTL retry topology
+func (s *TTLRetryScheduler) Initialize(ctx context.Context) error
+
+// Schedule a retry with persistent TTL
+func (s *TTLRetryScheduler) ScheduleRetry(
+    ctx context.Context, 
+    msg contracts.Message, 
+    originalQueue string, 
+    attempt int, 
+    policy RetryPolicy, 
+    delay time.Duration, 
+    lastErr error) error
+
+// TTL Retry Interceptor
+type TTLRetryInterceptor struct {
+    scheduler   *TTLRetryScheduler
+    retryPolicy RetryPolicy
+    queueName   string
+    logger      *slog.Logger
+}
+
+func NewTTLRetryInterceptor(scheduler *TTLRetryScheduler, opts *TTLRetryInterceptorOptions) *TTLRetryInterceptor
+```
+
+### Acknowledgment Tracking
+
+Application-level acknowledgment tracking with correlation ID management.
+
+```go
+// ProcessingAcknowledgment represents an application-level processing acknowledgment
+type ProcessingAcknowledgment struct {
+    CorrelationID   string                 `json:"correlationId"`
+    MessageID       string                 `json:"messageId"`
+    MessageType     string                 `json:"messageType"`
+    Success         bool                   `json:"success"`
+    ErrorMessage    string                 `json:"errorMessage,omitempty"`
+    ProcessingTime  time.Duration          `json:"processingTime"`
+    ProcessedAt     time.Time              `json:"processedAt"`
+    ProcessorID     string                 `json:"processorId"`
+    Metadata        map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// AckResponse represents a pending acknowledgment response
+type AckResponse struct {
+    CorrelationID string
+    timeout       time.Duration
+    createdAt     time.Time
+}
+
+// Wait for processing acknowledgment with timeout
+func (r *AckResponse) WaitForAcknowledgment(ctx context.Context) (*ProcessingAcknowledgment, error)
+
+// AcknowledgmentTracker manages application-level acknowledgments
+type AcknowledgmentTracker struct {
+    publisher        *MessagePublisher
+    ackQueue         string
+    pendingAcks      map[string]*AckResponse
+    defaultTimeout   time.Duration
+    cleanupInterval  time.Duration
+    logger          *slog.Logger
+}
+
+// Send message and wait for acknowledgment
+func (t *AcknowledgmentTracker) SendWithAck(
+    ctx context.Context, 
+    msg contracts.Message, 
+    options ...PublishOption) (*AckResponse, error)
+
+// Handle incoming acknowledgment
+func (t *AcknowledgmentTracker) HandleAcknowledgment(ctx context.Context, ackMsg contracts.Message) error
+
+// ProcessingAckHandler wraps handlers to send automatic acknowledgments
+type ProcessingAckHandler struct {
+    handler     MessageHandler
+    publisher   *MessagePublisher
+    logger      *slog.Logger
+    processorID string
+}
+
+func NewProcessingAckHandler(
+    handler MessageHandler, 
+    publisher *MessagePublisher, 
+    opts *ProcessingAckHandlerOptions) *ProcessingAckHandler
+```
+
+### Sync Mutation Journal
+
+Entity-level mutation tracking for distributed synchronization.
+
+```go
+// EntityMutationType represents entity-level mutations for sync
+type EntityMutationType string
+
+const (
+    EntityCreate EntityMutationType = "entity.create"
+    EntityUpdate EntityMutationType = "entity.update"
+    EntityDelete EntityMutationType = "entity.delete"
+    EntityPatch  EntityMutationType = "entity.patch"
+    EntityMerge  EntityMutationType = "entity.merge"
+)
+
+// SyncStatus represents the synchronization status of a mutation
+type SyncStatus string
+
+const (
+    SyncStatusPending   SyncStatus = "pending"
+    SyncStatusSynced    SyncStatus = "synced"
+    SyncStatusFailed    SyncStatus = "failed"
+    SyncStatusConflict  SyncStatus = "conflict"
+    SyncStatusIgnored   SyncStatus = "ignored"
+)
+
+// EntityMutationRecord represents an entity-level mutation for synchronization
+type EntityMutationRecord struct {
+    ID             string                 `json:"id"`
+    ServiceID      string                 `json:"serviceId"`
+    EntityType     string                 `json:"entityType"`
+    EntityID       string                 `json:"entityId"`
+    EntityVersion  int64                  `json:"entityVersion"`
+    MutationType   EntityMutationType     `json:"mutationType"`
+    Timestamp      time.Time              `json:"timestamp"`
+    CorrelationID  string                 `json:"correlationId"`
+    CausationID    string                 `json:"causationId,omitempty"`
+    Payload        json.RawMessage        `json:"payload"`
+    BeforeState    json.RawMessage        `json:"beforeState,omitempty"`
+    AfterState     json.RawMessage        `json:"afterState,omitempty"`
+    SyncStatus     SyncStatus             `json:"syncStatus"`
+    SyncedAt       *time.Time             `json:"syncedAt,omitempty"`
+    SyncError      string                 `json:"syncError,omitempty"`
+    ConflictsWith  []string               `json:"conflictsWith,omitempty"`
+    Metadata       map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// SyncMutationJournal extends the basic mutation journal with sync capabilities
+type SyncMutationJournal interface {
+    MutationJournal
+    
+    // RecordEntityMutation records an entity-level mutation
+    RecordEntityMutation(ctx context.Context, record *EntityMutationRecord) error
+    
+    // GetEntityMutations retrieves mutations for a specific entity
+    GetEntityMutations(ctx context.Context, entityType, entityID string) ([]*EntityMutationRecord, error)
+    
+    // GetCorrelatedMutations retrieves mutations with the same correlation ID
+    GetCorrelatedMutations(ctx context.Context, correlationID string) ([]*EntityMutationRecord, error)
+    
+    // GetUnsyncedMutations retrieves mutations that haven't been synced
+    GetUnsyncedMutations(ctx context.Context, limit int) ([]*EntityMutationRecord, error)
+    
+    // MarkAsSynced marks mutations as successfully synced
+    MarkAsSynced(ctx context.Context, mutationIDs []string, syncedAt time.Time) error
+    
+    // MarkAsFailed marks mutations as sync failed
+    MarkAsFailed(ctx context.Context, mutationIDs []string, syncError string) error
+    
+    // GetConflicts retrieves mutations that have sync conflicts
+    GetConflicts(ctx context.Context) ([]*EntityMutationRecord, error)
+    
+    // ResolveConflict resolves a sync conflict
+    ResolveConflict(ctx context.Context, mutationID string, resolution SyncStatus) error
+}
+
+// Create in-memory sync mutation journal
+func NewInMemorySyncMutationJournal(
+    baseOpts []InMemoryJournalOption, 
+    syncOpts ...SyncJournalOption) *InMemorySyncMutationJournal
+
+// Journal configuration options
+func WithServiceID(serviceID string) SyncJournalOption
+```
+
+### Client Configuration
+
+Enterprise features are configured through client options:
+
+```go
+// Enable TTL-based retry scheduling
+func WithTTLRetry(policy ...RetryPolicy) ClientOption
+
+// Enable acknowledgment tracking
+func WithAcknowledgmentTracking(timeout ...time.Duration) ClientOption
+
+// Enable sync mutation journal
+func WithSyncMutationJournal(options ...SyncJournalOption) ClientOption
+
+// Example: Client with all enterprise features
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithTTLRetry(),                           // Enable TTL retry
+    mmate.WithAcknowledgmentTracking(30*time.Second), // Enable ack tracking
+    mmate.WithSyncMutationJournal(),                  // Enable sync journal
+    mmate.WithServiceName("order-service"),
+)
+```
+
+### Enterprise Client Methods
+
+Additional methods available when enterprise features are enabled:
+
+```go
+// TTL Retry Scheduler access
+func (c *Client) TTLRetryScheduler() *TTLRetryScheduler
+
+// Acknowledgment Tracker access
+func (c *Client) AcknowledgmentTracker() *AcknowledgmentTracker
+
+// Sync Mutation Journal access
+func (c *Client) SyncMutationJournal() SyncMutationJournal
+
+// Send with acknowledgment tracking
+func (c *Client) SendWithAck(ctx context.Context, msg contracts.Message, options ...PublishOption) (*AckResponse, error)
+
+// Publish events with acknowledgment
+func (c *Client) PublishEventWithAck(ctx context.Context, evt contracts.Event, options ...PublishOption) (*AckResponse, error)
+
+// Publish commands with acknowledgment
+func (c *Client) PublishCommandWithAck(ctx context.Context, cmd contracts.Command, options ...PublishOption) (*AckResponse, error)
+
+// Record entity mutation
+func (c *Client) RecordEntityMutation(ctx context.Context, record *EntityMutationRecord) error
+
+// Get entity mutations
+func (c *Client) GetEntityMutations(ctx context.Context, entityType, entityID string) ([]*EntityMutationRecord, error)
+
+// Get unsynced mutations
+func (c *Client) GetUnsyncedMutations(ctx context.Context, limit int) ([]*EntityMutationRecord, error)
 
 // WorkflowCompensatedEvent published when compensation completes
 type WorkflowCompensatedEvent struct {

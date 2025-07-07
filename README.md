@@ -2,6 +2,8 @@
 
 Welcome to the unified documentation for Message Mate (Mmate) - a comprehensive messaging framework available for both .NET and Go.
 
+Currently supports RabbitMQ and Amazon MQ, support for Azure ServiceBus and other message bus`s are planned.
+
 ## Overview
 
 Mmate provides high-level abstractions for messaging patterns built on top of brokers like RabbitMQ, offering:

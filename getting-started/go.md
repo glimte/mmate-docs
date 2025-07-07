@@ -12,6 +12,7 @@ This guide will help you get up and running with Mmate-Go in just a few minutes.
 - **Transport Abstraction**: Designed to support multiple transports (RabbitMQ, Kafka, SQS) in the future
 - **Simplified Setup**: Single client creation with configuration
 - **Message Type Registration**: Register your message types for automatic deserialization
+- **Enterprise Features**: TTL retry scheduling, acknowledgment tracking, sync mutation journal
 
 ## Prerequisites
 
@@ -480,15 +481,120 @@ func TestIntegration(t *testing.T) {
 }
 ```
 
+## Enterprise Features
+
+Mmate-Go includes enterprise-grade features for production deployments:
+
+### TTL-based Retry Scheduling
+
+Persistent retry scheduling using RabbitMQ Dead Letter Exchange (DLX):
+
+```go
+// Enable TTL retry with custom policy
+retryPolicy := reliability.NewExponentialBackoff(
+    100*time.Millisecond,  // initial delay
+    30*time.Second,        // max delay
+    2.0,                   // multiplier
+    5,                     // max retries
+)
+
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithTTLRetry(retryPolicy),  // Enable TTL retry
+    mmate.WithServiceName("order-service"),
+)
+
+// Retries persist across service restarts
+```
+
+### Application-Level Acknowledgment Tracking
+
+End-to-end message processing visibility:
+
+```go
+// Enable acknowledgment tracking
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithAcknowledgmentTracking(30*time.Second),  // timeout
+    mmate.WithServiceName("order-service"),
+)
+
+// Send message and wait for processing confirmation
+ackResponse, err := client.SendWithAck(ctx, command)
+if err != nil {
+    log.Fatal("Failed to send:", err)
+}
+
+// Wait for acknowledgment
+ack, err := ackResponse.WaitForAcknowledgment(ctx)
+if err != nil {
+    log.Printf("Acknowledgment timeout: %v", err)
+} else if ack.Success {
+    log.Printf("Message processed in %v", ack.ProcessingTime)
+} else {
+    log.Printf("Processing failed: %s", ack.ErrorMessage)
+}
+```
+
+### Sync Mutation Journal
+
+Entity-level mutation tracking for distributed synchronization:
+
+```go
+// Enable sync mutation journal
+client, err := mmate.NewClientWithOptions(connectionString,
+    mmate.WithSyncMutationJournal(),
+    mmate.WithServiceName("order-service"),
+)
+
+// Record entity mutations
+mutation := &journal.EntityMutationRecord{
+    EntityType:    "Order",
+    EntityID:      order.ID,
+    EntityVersion: order.Version,
+    MutationType:  journal.EntityUpdate,
+    CorrelationID: correlationID,
+    AfterState:    orderData,
+    SyncStatus:    journal.SyncStatusPending,
+}
+
+err = client.RecordEntityMutation(ctx, mutation)
+
+// Query entity history
+mutations, err := client.GetEntityMutations(ctx, "Order", orderID)
+
+// Get unsynced mutations for background sync
+unsyncedMutations, err := client.GetUnsyncedMutations(ctx, 100)
+```
+
+### Combined Enterprise Configuration
+
+Enable all enterprise features together:
+
+```go
+client, err := mmate.NewClientWithOptions(connectionString,
+    // Enterprise features
+    mmate.WithTTLRetry(),                           // Persistent retry
+    mmate.WithAcknowledgmentTracking(30*time.Second), // Ack tracking
+    mmate.WithSyncMutationJournal(),                  // Mutation journal
+    
+    // Standard configuration
+    mmate.WithServiceName("order-service"),
+    mmate.WithDefaultMetrics(),
+)
+```
+
 ## Next Steps
 
 Now that you have the basics:
 
 1. Learn about [FIFO Queues](../components/messaging.md#fifo-queues) for ordered processing
-2. Explore [Message Patterns](patterns.md) for advanced scenarios  
-3. Read about [StageFlow](stageflow.md) for workflow orchestration
-4. Check [Interceptors](interceptors.md) for cross-cutting concerns
-5. See the [API Reference](api/core.md) for detailed documentation
+2. Explore [Message Patterns](../patterns.md) for advanced scenarios  
+3. Read about [StageFlow](../components/stageflow.md) for workflow orchestration
+4. Check [Interceptors](../components/interceptors.md) for cross-cutting concerns
+5. Explore [Enterprise Features](../advanced/) for production deployments:
+   - [TTL Retry Scheduler](../advanced/ttl-retry-scheduler.md)
+   - [Acknowledgment Tracking](../advanced/acknowledgment-tracking.md)
+   - [Sync Mutation Journal](../advanced/sync-mutation-journal.md)
+6. See the [API Reference](../platform/go/api-reference.md) for detailed documentation
 
 ## Troubleshooting
 
