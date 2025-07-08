@@ -1,5 +1,7 @@
 # Message Retry Logic
 
+> **⚠️ Platform Differences**: Advanced retry features are primarily available in the Go implementation. The .NET implementation provides basic retry capabilities only.
+
 The retry mechanism provides resilience against transient failures when sending or publishing messages, handling temporary network issues, broker unavailability, or other intermittent problems.
 
 ## How It Works
@@ -24,23 +26,28 @@ The retry mechanism uses an exponential backoff strategy:
 
 <table>
 <tr>
-<th>.NET</th>
-<th>Go</th>
+<th>.NET (Basic Retry Only)</th>
+<th>Go (Full Enterprise Retry)</th>
 </tr>
 <tr>
 <td>
 
 ```csharp
-services.AddMmateMessaging()
-    .WithRabbitMqTransport(options =>
-    {
-        // Retry configuration
-        options.MaxRetryAttempts = 3;
-        options.InitialRetryDelayMs = 100;
-        options.MaxRetryDelayMs = 5000;
-        options.RetryMultiplier = 2.0;
-    });
+// .NET implementation has basic retry in SimpleRetryScheduler
+services.AddMmateMessaging(options =>
+{
+    options.RabbitMqConnection = "amqp://localhost";
+});
+
+services.ConfigureRetryPolicies(options =>
+{
+    // Basic retry options available
+    options.MaxRetries = 3;
+    options.InitialDelay = TimeSpan.FromMilliseconds(100);
+});
 ```
+
+> **Note**: Advanced retry configurations like TTL-based retries, per-message-type policies, and circuit breaker integration are not available in .NET.
 
 </td>
 <td>
@@ -78,20 +85,22 @@ The retry logic follows this process:
 
 ## Operations with Retry Logic
 
-The following message operations include automatic retry logic:
-
 <table>
 <tr>
-<th>.NET</th>
-<th>Go</th>
+<th>.NET (Limited)</th>
+<th>Go (Full Support)</th>
 </tr>
 <tr>
 <td>
 
-- `SendAsync<T>` - Sending messages to a specific queue
-- `PublishAsync<T>` - Publishing messages to a topic
-- `RequestAsync<TQuery, TResponse>` - Query operations
-- `SendWithAckAsync<T>` - Commands with acknowledgment
+- `PublishAsync()` - Basic publishing with simple retry
+- `PublishToTopicAsync()` - Basic topic publishing
+- Basic request/reply via SyncAsyncBridge
+
+**Not Available:**
+- ❌ `SendWithAckAsync()` - Not implemented
+- ❌ Advanced acknowledgment tracking
+- ❌ Per-message-type retry policies
 
 </td>
 <td>
@@ -100,6 +109,8 @@ The following message operations include automatic retry logic:
 - `Publish()` - Publishing messages to a topic
 - `Request()` - Query operations
 - `SendWithAck()` - Commands with acknowledgment
+- Full retry policy configuration
+- TTL-based persistent retries
 
 </td>
 </tr>
@@ -107,33 +118,12 @@ The following message operations include automatic retry logic:
 
 ## Custom Retry Policies
 
-### Exponential Backoff
+> **⚠️ .NET Limitation**: Custom retry policies, exponential backoff configuration, and advanced retry features are only available in the Go implementation.
 
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-services.AddMmateInterceptors()
-    .ConfigureRetryPolicies(options =>
-    {
-        options.UseExponentialBackoff = true;
-        options.GlobalMaxRetries = 5;
-        options.InitialDelayMs = 1000;
-        options.MaxDelayMs = 30000;
-        options.BackoffMultiplier = 2.0;
-        options.AddJitter = true; // Prevent thundering herd
-    });
-```
-
-</td>
-<td>
+### Go Implementation - Full Retry Features
 
 ```go
+// Exponential backoff with jitter
 retryPolicy := &reliability.ExponentialBackoff{
     InitialInterval: time.Second,
     MaxInterval:     30 * time.Second,
@@ -147,32 +137,7 @@ config := messaging.Config{
 }
 ```
 
-</td>
-</tr>
-</table>
-
-### Fixed Delay
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-services.AddMmateInterceptors()
-    .ConfigureRetryPolicies(options =>
-    {
-        options.UseExponentialBackoff = false;
-        options.GlobalMaxRetries = 3;
-        options.FixedDelayMs = 1000; // 1 second between attempts
-    });
-```
-
-</td>
-<td>
+### Fixed Delay (Go Only)
 
 ```go
 retryPolicy := &reliability.FixedDelay{
@@ -185,48 +150,7 @@ config := messaging.Config{
 }
 ```
 
-</td>
-</tr>
-</table>
-
-### Linear Backoff
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-// Custom retry policy
-public class LinearBackoffPolicy : IRetryPolicy
-{
-    public async Task<T> ExecuteAsync<T>(
-        Func<Task<T>> operation,
-        CancellationToken ct)
-    {
-        for (int attempt = 1; attempt <= 3; attempt++)
-        {
-            try
-            {
-                return await operation();
-            }
-            catch (Exception ex) when (ShouldRetry(ex, attempt))
-            {
-                var delay = TimeSpan.FromSeconds(attempt);
-                await Task.Delay(delay, ct);
-            }
-        }
-        
-        return await operation(); // Final attempt
-    }
-}
-```
-
-</td>
-<td>
+### Linear Backoff (Go Only)
 
 ```go
 type LinearBackoff struct {
@@ -260,43 +184,23 @@ func (l *LinearBackoff) Execute(
 }
 ```
 
-</td>
-</tr>
-</table>
+## .NET Implementation Limitations
 
-## Exception Handling
+The .NET implementation provides only basic retry functionality through `SimpleRetryScheduler`:
+
+- ✅ Basic in-memory retry for transient failures
+- ✅ Simple exponential backoff (fixed configuration)
+- ❌ No custom retry policies
+- ❌ No per-message-type configuration  
+- ❌ No TTL-based persistent retries
+- ❌ No circuit breaker integration
+- ❌ No advanced monitoring or metrics
+
+**For enterprise retry features, use the Go implementation.**
+
+## Exception Handling (Go Implementation)
 
 ### Retryable vs Non-Retryable Errors
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-services.AddMmateInterceptors()
-    .ConfigureRetryPolicies(options =>
-    {
-        // Custom retry predicate
-        options.ShouldRetry = (exception, attempt) =>
-        {
-            // Retry on transient errors only
-            return exception is TimeoutException ||
-                   exception is SocketException ||
-                   exception is HttpRequestException;
-        };
-        
-        // Different retry counts by error type
-        options.RetryCountOverrides[typeof(TimeoutException)] = 5;
-        options.RetryCountOverrides[typeof(SocketException)] = 3;
-    });
-```
-
-</td>
-<td>
 
 ```go
 // Define retryable error types
@@ -316,289 +220,28 @@ retryPolicy := &reliability.ExponentialBackoff{
 }
 ```
 
-</td>
-</tr>
-</table>
+### Advanced Features (Go Only)
 
-### Circuit Breaker Integration
+The Go implementation provides enterprise-grade retry features:
 
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-services.AddMmateInterceptors()
-    .ConfigureRetryPolicies(options =>
-    {
-        options.GlobalMaxRetries = 3;
-    })
-    .ConfigureCircuitBreaker(options =>
-    {
-        options.FailureThreshold = 5;
-        options.OpenDuration = TimeSpan.FromSeconds(30);
-    });
-
-// Retries happen first, then circuit breaker tracks failures
-```
-
-</td>
-<td>
+- **Circuit Breaker Integration**: Combine retry with circuit breakers
+- **Per-Message-Type Policies**: Different retry settings per message type  
+- **Advanced Monitoring**: Comprehensive retry metrics and logging
+- **TTL-Based Retries**: Persistent retry scheduling using RabbitMQ TTL
+- **Jitter Support**: Prevent thundering herd problems
+- **Custom Error Classification**: Define which errors should be retried
 
 ```go
-// Combine retry with circuit breaker
-retryPolicy := &reliability.ExponentialBackoff{
-    MaxRetries: 3,
-}
-
+// Example: Combine retry with circuit breaker
+retryPolicy := &reliability.ExponentialBackoff{MaxRetries: 3}
 circuitBreaker := reliability.NewCircuitBreaker(
     reliability.WithFailureThreshold(5),
     reliability.WithTimeout(30*time.Second),
 )
-
-// Chain them together
 handler := reliability.Chain(retryPolicy, circuitBreaker)
 ```
 
-</td>
-</tr>
-</table>
-
-## Per-Message Type Configuration
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-services.AddMmateInterceptors()
-    .ConfigureRetryPolicies(options =>
-    {
-        // Different policies per message type
-        options.MessageTypeOverrides[typeof(CriticalCommand)] = 
-            new RetryPolicy 
-            { 
-                MaxRetries = 5,
-                InitialDelayMs = 500 
-            };
-            
-        options.MessageTypeOverrides[typeof(BackgroundTask)] = 
-            new RetryPolicy 
-            { 
-                MaxRetries = 1,
-                InitialDelayMs = 5000 
-            };
-    });
-```
-
-</td>
-<td>
-
-```go
-// Per-message type retry policies
-retryConfig := map[string]reliability.RetryPolicy{
-    "CriticalCommand": &reliability.ExponentialBackoff{
-        MaxRetries:      5,
-        InitialInterval: 500 * time.Millisecond,
-    },
-    "BackgroundTask": &reliability.FixedDelay{
-        MaxRetries: 1,
-        Delay:      5 * time.Second,
-    },
-}
-
-dispatcher := messaging.NewDispatcher(
-    messaging.WithPerTypeRetry(retryConfig))
-```
-
-</td>
-</tr>
-</table>
-
-## Monitoring and Logging
-
-### Retry Metrics
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-public class RetryMetricsInterceptor : MessageInterceptorBase
-{
-    private readonly IMetrics _metrics;
-    
-    public override async Task OnAfterConsumeAsync(
-        MessageContext context,
-        CancellationToken ct)
-    {
-        var retryCount = context.GetHeader<int>("RetryAttempt");
-        if (retryCount > 0)
-        {
-            _metrics.Increment("message.retry.count", 
-                new[] { 
-                    ("message_type", context.Message.GetType().Name),
-                    ("attempt", retryCount.ToString())
-                });
-        }
-    }
-}
-```
-
-</td>
-<td>
-
-```go
-type RetryMetricsInterceptor struct {
-    metrics metrics.Client
-}
-
-func (i *RetryMetricsInterceptor) After(
-    ctx context.Context,
-    msg messaging.Message,
-    err error) {
-    
-    if retryCount := GetRetryCount(ctx); retryCount > 0 {
-        i.metrics.Increment("message.retry.count",
-            metrics.Tags{
-                "message_type": msg.Type(),
-                "attempt":      fmt.Sprintf("%d", retryCount),
-            })
-    }
-}
-```
-
-</td>
-</tr>
-</table>
-
-### Retry Logging
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-// Automatic retry logging
-services.Configure<LoggerFilterOptions>(options =>
-{
-    options.Rules.Add(new LoggerFilterRule(
-        "Mmate.Messaging.Retry",
-        LogLevel.Information,
-        (provider, category, logLevel) => true));
-});
-
-// Log output:
-// [INFO] Retrying operation attempt 2/3 after 200ms delay
-// [WARN] All retry attempts exhausted for SendAsync operation
-```
-
-</td>
-<td>
-
-```go
-// Configure retry logging
-logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-
-retryPolicy := &reliability.ExponentialBackoff{
-    Logger: logger,
-}
-
-// Log output:
-// {"level":"INFO","msg":"retrying operation","attempt":2,"delay":"200ms"}
-// {"level":"WARN","msg":"all retry attempts exhausted","operation":"send"}
-```
-
-</td>
-</tr>
-</table>
-
-## Testing Retry Logic
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-[Test]
-public async Task RetryPolicy_ShouldRetryOnTransientError()
-{
-    // Arrange
-    var retryPolicy = new ExponentialBackoffPolicy
-    {
-        MaxRetries = 3,
-        InitialDelay = TimeSpan.FromMilliseconds(10)
-    };
-    
-    var attempts = 0;
-    Func<Task<string>> operation = () =>
-    {
-        attempts++;
-        if (attempts < 3)
-            throw new TimeoutException("Transient error");
-        return Task.FromResult("Success");
-    };
-    
-    // Act
-    var result = await retryPolicy.ExecuteAsync(operation);
-    
-    // Assert
-    Assert.AreEqual("Success", result);
-    Assert.AreEqual(3, attempts);
-}
-```
-
-</td>
-<td>
-
-```go
-func TestRetryPolicy_ShouldRetryOnTransientError(t *testing.T) {
-    // Arrange
-    retryPolicy := &reliability.ExponentialBackoff{
-        MaxRetries:      3,
-        InitialInterval: 10 * time.Millisecond,
-    }
-    
-    attempts := 0
-    operation := func() error {
-        attempts++
-        if attempts < 3 {
-            return &TransientError{Err: errors.New("timeout")}
-        }
-        return nil
-    }
-    
-    // Act
-    err := retryPolicy.Execute(context.Background(), operation)
-    
-    // Assert
-    assert.NoError(t, err)
-    assert.Equal(t, 3, attempts)
-}
-```
-
-</td>
-</tr>
-</table>
+For detailed Go examples and implementation, see the [TTL Retry Scheduler](ttl-retry-scheduler.md) documentation.
 
 ## Best Practices
 

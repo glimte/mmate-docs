@@ -1,27 +1,62 @@
 # Migrating from .NET to Go
 
-This guide helps .NET developers transition from Mmate .NET to Mmate Go implementation.
+> **🔄 Platform Choice**: Both .NET and Go implementations are enterprise-ready with comprehensive messaging capabilities. Choose based on your technology stack, team expertise, and specific requirements rather than feature availability.
 
-## Key Differences Overview
+This guide helps .NET developers who need to transition to the Go implementation, whether for technology stack alignment, performance requirements, or Go-specific features.
 
-| Aspect | .NET | Go |
-|--------|------|-----|
-| Async Model | async/await | Goroutines + channels |
-| Error Handling | Exceptions | Error returns |
-| DI Container | Built-in ASP.NET Core | Manual wiring |
-| Configuration | appsettings.json | Environment variables |
-| Package Manager | NuGet | Go modules |
+## Key Platform Differences
 
-## Package Mapping
+| Aspect | .NET (Enterprise) | Go (Enterprise) |
+|--------|-------------------|-----------------|
+| **Features** | Full messaging patterns, middleware architecture, ASP.NET Core integration | Full messaging patterns, interceptor pipeline, cloud-native |
+| **Acknowledgments** | ✅ Application-level tracking (planned) | ✅ Application-level acknowledgment tracking |
+| **Retry Logic** | ✅ Circuit breakers, retry policies | ✅ TTL-based persistent retries |
+| **Monitoring** | ✅ Health checks, metrics, ASP.NET Core integration | ✅ Comprehensive metrics and dashboards |
+| **Scaling** | ✅ Consumer groups, batch processing | ✅ Consumer groups and auto-scaling |
+| **Async Model** | async/await | Goroutines + channels |
+| **Error Handling** | Exceptions | Error returns |
+| **DI Container** | Built-in ASP.NET Core | Manual wiring |
+| **Configuration** | appsettings.json + IOptions | Environment variables |
+| **Enterprise Integration** | ✅ Native ASP.NET Core, hosted services | ✅ Cloud-native patterns |
 
-| .NET Package | Go Package | Notes |
-|--------------|------------|-------|
-| Mmate.Contracts | contracts | Same concepts |
-| Mmate.Messaging | messaging | Core functionality |
-| Mmate.StageFlow | stageflow | Workflow orchestration |
-| Mmate.SyncAsyncBridge | bridge | Name change |
-| Mmate.Interceptors | interceptors | Same patterns |
-| Mmate.Messaging.Discovery | - | Removed (explicit registration) |
+## Platform-Specific Features
+
+### Go-Specific Features (Not in .NET)
+
+| Feature | Description | Go Package |
+|---------|-------------|------------|
+| **TTL Retry Scheduler** | Persistent retry scheduling using RabbitMQ TTL | `internal/reliability.TTLRetryScheduler` |
+| **Advanced Acknowledgment Tracking** | Application-level processing confirmations | `messaging.AcknowledgmentTracker` |
+
+### .NET-Specific Features (Not in Go)
+
+| Feature | Description | .NET Package |
+|---------|-------------|-------------|
+| **ASP.NET Core Integration** | Native health checks, hosted services, middleware | `Mmate.Monitor` |
+| **Dependency Injection** | Built-in service registration and lifetime management | `Mmate.Messaging` |
+| **Configuration Integration** | IOptions pattern, appsettings.json support | `Mmate.Messaging` |
+| **Middleware Architecture** | Modern ASP.NET Core-style middleware pipeline | `Mmate.Interceptors` |
+
+### Shared Features (Both Platforms)
+
+| Feature | .NET Implementation | Go Implementation |
+|---------|-------------------|------------------|
+| **Consumer Groups** | ✅ `DefaultConsumerGroup` with scaling | ✅ `messaging.ConsumerGroup` |
+| **Circuit Breakers** | ✅ `CircuitBreakerMiddleware` | ✅ `internal/reliability.CircuitBreaker` |
+| **Advanced Monitoring** | ✅ Health checks, metrics, CLI tools | ✅ Metrics, dashboards, service monitoring |
+| **Batch Processing** | ✅ `IBatchPublisher` | ✅ `messaging.Batch` |
+| **StageFlow Workflows** | ✅ `IPipeline` with persistence | ✅ Complex workflows with compensation |
+
+### Package Mapping
+
+| .NET Package | Go Package | Migration Notes |
+|--------------|------------|-----------------|
+| Mmate.Contracts | contracts | Same concepts, compatible message formats |
+| Mmate.Messaging | messaging | Similar functionality, different patterns |
+| Mmate.StageFlow | stageflow | Similar pipeline concepts |
+| Mmate.SyncAsyncBridge | bridge | Same functionality |
+| Mmate.Interceptors | interceptors | Middleware → Interceptor pattern |
+| Mmate.Monitor | monitor | ASP.NET Core integration → CLI tools |
 
 ## Code Translation Examples
 
@@ -61,7 +96,7 @@ func NewCreateOrderCommand() *CreateOrderCommand {
 
 ### 2. Publishing Messages
 
-**.NET:**
+**.NET (Basic API):**
 ```csharp
 public class OrderService
 {
@@ -80,21 +115,27 @@ public class OrderService
             Items = dto.Items
         };
         
+        // .NET has full messaging capabilities
         await _publisher.PublishCommandAsync(command);
     }
 }
 ```
 
-**Go:**
+**Go (with Go-specific features):**
 ```go
 type OrderService struct {
     publisher messaging.Publisher
+    client    *mmate.Client  // Client with advanced acknowledgment tracking
 }
 
-func NewOrderService(publisher messaging.Publisher) *OrderService {
-    return &OrderService{publisher: publisher}
+func NewOrderService(client *mmate.Client) *OrderService {
+    return &OrderService{
+        publisher: client.Publisher(),
+        client:    client,
+    }
 }
 
+// Basic publishing (similar to .NET)
 func (s *OrderService) CreateOrder(ctx context.Context, dto CreateOrderDto) error {
     command := &CreateOrderCommand{
         BaseCommand: contracts.NewBaseCommand("CreateOrderCommand"),
@@ -103,6 +144,33 @@ func (s *OrderService) CreateOrder(ctx context.Context, dto CreateOrderDto) erro
     }
     
     return s.publisher.PublishCommand(ctx, command)
+}
+
+// Go-specific feature - Advanced acknowledgment tracking
+func (s *OrderService) CreateOrderWithAck(ctx context.Context, dto CreateOrderDto) error {
+    command := &CreateOrderCommand{
+        BaseCommand: contracts.NewBaseCommand("CreateOrderCommand"),
+        CustomerID:  dto.CustomerID,
+        Items:       dto.Items,
+    }
+    
+    // This specific acknowledgment pattern is Go-only
+    ackResponse, err := s.client.SendWithAck(ctx, command)
+    if err != nil {
+        return err
+    }
+    
+    // Wait for processing confirmation
+    ack, err := ackResponse.WaitForAcknowledgment(ctx)
+    if err != nil {
+        return fmt.Errorf("acknowledgment timeout: %w", err)
+    }
+    
+    if !ack.Success {
+        return fmt.Errorf("order processing failed: %s", ack.ErrorMessage)
+    }
+    
+    return nil
 }
 ```
 

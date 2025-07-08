@@ -31,17 +31,6 @@ dotnet add package Mmate.SyncAsyncBridge
 dotnet add package Mmate.Schema
 ```
 
-### Installing Command Line Tools
-
-Mmate CLI tools are distributed separately from the [mmate-toolbox repository](https://github.com/glimte/mmate-toolbox):
-
-```bash
-# Monitoring tool
-dotnet tool install --global MmateToolbox.Monitor
-
-# TUI Dashboard (optional)
-dotnet tool install --global MmateToolbox.Tui
-```
 
 ## Quick Start Example
 
@@ -181,7 +170,7 @@ public class GetOrderHandler : IMessageHandler<GetOrderQuery, GetOrderResponse>
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add Mmate messaging
+// Add Mmate messaging with modern middleware pipeline
 builder.Services.AddMmateMessaging(options =>
 {
     options.ConnectionString = "amqp://guest:guest@localhost:5672/";
@@ -199,6 +188,15 @@ builder.Services.AddMmateMessaging(options =>
     options.EnableCircuitBreaker = true;
     options.CircuitBreakerFailureThreshold = 5;
     options.CircuitBreakerOpenTimeoutSeconds = 30;
+})
+.WithMiddleware(pipeline =>
+{
+    // Modern middleware pipeline
+    pipeline.UseLogging();
+    pipeline.UseMetrics();
+    pipeline.UseRetryPolicy();
+    pipeline.UseCircuitBreaker();
+    pipeline.UseErrorHandling();
 })
 .AddMessageHandler<CreateOrderHandler, CreateOrderCommand>()
 .AddMessageHandler<GetOrderHandler, GetOrderQuery>();
@@ -259,43 +257,162 @@ public class OrdersController : ControllerBase
 }
 ```
 
-## Working with Interceptors
+## Working with Middleware
 
-Add cross-cutting concerns without modifying your handlers:
+Add cross-cutting concerns using the modern middleware pipeline:
 
 ```csharp
-// 1. Create an interceptor
-public class LoggingInterceptor : MessageInterceptorBase
+// 1. Create custom middleware
+public class AuthenticationMiddleware : IMessageMiddleware
 {
-    private readonly ILogger<LoggingInterceptor> _logger;
+    private readonly ILogger<AuthenticationMiddleware> _logger;
+    private readonly IAuthenticationService _authService;
 
-    public LoggingInterceptor(ILogger<LoggingInterceptor> logger)
+    public AuthenticationMiddleware(
+        ILogger<AuthenticationMiddleware> logger,
+        IAuthenticationService authService)
     {
         _logger = logger;
+        _authService = authService;
     }
 
-    public override Task OnBeforeConsumeAsync(MessageContext context, CancellationToken cancellationToken)
+    public async Task InvokeAsync(MessageContext context, MessageDelegate next)
     {
-        _logger.LogInformation("Processing {MessageType} with ID {MessageId}",
-            context.Message.GetType().Name,
-            context.GetHeader<string>("MessageId"));
+        var token = context.GetHeader<string>("Authorization");
         
-        return Task.CompletedTask;
-    }
+        if (string.IsNullOrEmpty(token))
+        {
+            throw new UnauthorizedException("Authorization required");
+        }
 
-    public override Task OnAfterConsumeAsync(MessageContext context, CancellationToken cancellationToken)
-    {
-        _logger.LogInformation("Completed processing {MessageType}",
-            context.Message.GetType().Name);
-        
-        return Task.CompletedTask;
+        var principal = await _authService.ValidateTokenAsync(token);
+        context.AddProperty("User", principal);
+
+        _logger.LogInformation("Authenticated user {UserId} for message {MessageType}",
+            principal.Identity.Name, context.Message.GetType().Name);
+
+        await next(context);
     }
 }
 
-// 2. Register the interceptor
-builder.Services.AddMmateInterceptors(interceptors =>
+// 2. Register middleware in the pipeline
+builder.Services.AddMmateMessaging()
+    .WithMiddleware(pipeline =>
+    {
+        pipeline.UseLogging();           // Built-in logging
+        pipeline.UseMetrics();           // Built-in metrics
+        pipeline.Use<AuthenticationMiddleware>(); // Custom middleware
+        pipeline.UseRetryPolicy();       // Built-in retry
+        pipeline.UseCircuitBreaker();    // Built-in circuit breaker
+        pipeline.UseErrorHandling();     // Built-in error handling
+    });
+
+// 3. Configure built-in middleware
+builder.Services.AddMmateMessaging()
+    .WithMiddleware(pipeline =>
+    {
+        pipeline.UseLogging(opts =>
+        {
+            opts.LogLevel = LogLevel.Information;
+            opts.LogMessageContent = true;
+            opts.LogHeaders = true;
+        });
+        
+        pipeline.UseMetrics(opts =>
+        {
+            opts.EnableDetailedMetrics = true;
+            opts.MetricsPrefix = "myapp.messaging";
+        });
+        
+        pipeline.UseRetryPolicy(opts =>
+        {
+            opts.MaxAttempts = 3;
+            opts.InitialDelay = TimeSpan.FromSeconds(1);
+            opts.BackoffMultiplier = 2.0;
+        });
+    });
+```
+
+## Batch Publishing for High Volume
+
+Handle high-volume scenarios with batch publishing:
+
+```csharp
+// Configure batch publishing
+builder.Services.AddMmateMessaging()
+    .WithBatchPublishing(options =>
+    {
+        options.MaxBatchSize = 100;
+        options.FlushInterval = TimeSpan.FromSeconds(5);
+        options.EnableAutoFlush = true;
+    });
+
+// Use batch publisher in your service
+public class EventPublishingService
 {
-    interceptors.Add<LoggingInterceptor>();
+    private readonly IBatchPublisher _batchPublisher;
+
+    public async Task PublishOrderEventsAsync(IEnumerable<OrderEvent> events)
+    {
+        // Publish in batches with detailed results
+        var result = await _batchPublisher.PublishBatchWithResultAsync(events);
+        
+        if (result.Success)
+        {
+            _logger.LogInformation("Published {Count} events in {Duration}ms",
+                result.SuccessfulMessages, result.Duration.TotalMilliseconds);
+        }
+        else
+        {
+            _logger.LogWarning("{FailedCount} out of {TotalCount} events failed",
+                result.FailedMessages, result.TotalMessages);
+        }
+    }
+}
+```
+
+## Advanced Health Monitoring
+
+Set up comprehensive health monitoring:
+
+```csharp
+// Add health checks and metrics
+builder.Services.AddMmateMessaging()
+    .WithMiddleware(pipeline =>
+    {
+        pipeline.UseMetrics(opts =>
+        {
+            opts.EnableDetailedMetrics = true;
+            opts.RecordProcessingTime = true;
+            opts.RecordMessageSize = true;
+        });
+    });
+
+// Configure health checks
+builder.Services.AddHealthChecks()
+    .AddMmateHealthChecks()
+    .AddRabbitMqConnectionCheck()
+    .AddCircuitBreakerCheck();
+
+// Add advanced metrics collection
+builder.Services.AddMmateMetrics(options =>
+{
+    options.EnableDetailedMetrics = true;
+    options.CollectionInterval = TimeSpan.FromSeconds(30);
+    options.MetricsPrefix = "myapp.messaging";
+});
+
+var app = builder.Build();
+
+// Map health check endpoints
+app.MapHealthChecks("/health");
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("infrastructure")
+});
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("messaging")
 });
 ```
 

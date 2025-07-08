@@ -6,12 +6,12 @@ This section documents the core components that make up the Mmate messaging fram
 
 | Component | Purpose | Key Features |
 |-----------|---------|--------------|
-| [Contracts](contracts/README.md) | Message type definitions | Commands, Events, Queries, Replies |
-| [Messaging](messaging/README.md) | Core pub/sub functionality | Publishers, Subscribers, Handlers |
-| [StageFlow](stageflow.md) | Workflow orchestration | Multi-stage processes, Queue-based Compensation |
-| [Bridge](bridge/README.md) | Sync-over-async patterns | Request/Reply, Timeouts |
-| [Interceptors](interceptors/README.md) | Cross-cutting concerns | Logging, Metrics, Validation |
-| [Monitoring](monitoring/README.md) | Observability | Health checks, Metrics, Dashboards |
+| [Contracts](contracts.md) | Message type definitions | Commands, Events, Queries, Replies |
+| [Messaging](messaging.md) | Core pub/sub functionality | Publishers, Subscribers, Handlers, Batch Publishing |
+| [StageFlow](stageflow.md) | Workflow orchestration | Multi-stage processes, State persistence, Compensation |
+| [Bridge](bridge.md) | Sync-over-async patterns | Request/Reply, Timeouts |
+| [Interceptors](interceptors.md) | Cross-cutting concerns (.NET: Middleware) | Logging, Metrics, Validation, Circuit Breakers |
+| [Monitoring](monitoring.md) | Observability | Health checks, Metrics, CLI tooling |
 
 ## Component Relationships
 
@@ -157,7 +157,7 @@ func (h *OrderHandler) Handle(
 </tr>
 </table>
 
-### 4. Add Cross-Cutting Concerns (Interceptors)
+### 4. Add Cross-Cutting Concerns (Middleware/Interceptors)
 
 <table>
 <tr>
@@ -168,11 +168,14 @@ func (h *OrderHandler) Handle(
 <td>
 
 ```csharp
-services.AddMmate(options =>
-{
-    options.AddInterceptor<LoggingInterceptor>();
-    options.AddInterceptor<MetricsInterceptor>();
-});
+services.AddMmateMessaging()
+    .WithMiddleware(pipeline =>
+    {
+        pipeline.UseLogging();
+        pipeline.UseMetrics();
+        pipeline.UseRetryPolicy();
+        pipeline.UseCircuitBreaker();
+    });
 ```
 
 </td>
@@ -308,12 +311,14 @@ http.HandleFunc("/health",
 
 | If you need to... | Use this component |
 |-------------------|-------------------|
-| Define message structures | [Contracts](contracts/README.md) |
-| Send/receive messages | [Messaging](messaging/README.md) |
-| Get responses to requests | [Bridge](bridge/README.md) |
-| Orchestrate multi-step processes | [StageFlow](stageflow/README.md) |
-| Add logging/metrics/auth | [Interceptors](interceptors/README.md) |
-| Monitor system health | [Monitoring](monitoring/README.md) |
+| Define message structures | [Contracts](contracts.md) |
+| Send/receive messages | [Messaging](messaging.md) |
+| High-volume message publishing | [Messaging](messaging.md) (Batch Publishing) |
+| Get responses to requests | [Bridge](bridge.md) |
+| Orchestrate multi-step processes | [StageFlow](stageflow.md) |
+| Add logging/metrics/auth | [Interceptors](interceptors.md) (.NET: Middleware) |
+| Monitor system health | [Monitoring](monitoring.md) |
+| Scale message processing | [Messaging](messaging.md) (Consumer Groups) |
 
 ## Integration Patterns
 
@@ -341,10 +346,10 @@ All components working together with interceptors and monitoring
    - Version your messages
    - Document message flows
 
-3. **Apply Interceptors**
+3. **Apply Interceptors/Middleware**
    - Use for cross-cutting concerns
    - Keep them lightweight
-   - Order matters
+   - Order matters (.NET middleware pipeline execution order is critical)
 
 4. **Monitor Everything**
    - Set up health checks early

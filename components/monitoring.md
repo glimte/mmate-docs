@@ -1,78 +1,82 @@
 # Monitoring Component
 
-The monitoring component provides comprehensive observability for Mmate messaging systems, including health checks, metrics, and monitoring tools.
+> **⚠️ Platform Differences**: Advanced monitoring features are primarily available in the Go implementation. The .NET implementation provides basic health checks only.
 
-> **Service-Scoped Monitoring**: Each microservice should monitor only its own resources to prevent "mastodon" patterns where one service monitors the entire cluster. See [Service-Scoped Monitoring](#service-scoped-monitoring) for implementation patterns.
+The monitoring component provides observability for Mmate messaging systems, with different capabilities by platform:
+
+**Go Implementation**: Comprehensive monitoring with metrics, dashboards, and service-scoped monitoring
+**C# Implementation**: Basic health checks only
+
+> **Service-Scoped Monitoring**: Each microservice should monitor only its own resources to prevent "mastodon" patterns where one service monitors the entire cluster. This pattern is fully implemented in Go only.
 
 ## Overview
 
-The monitoring component offers:
-- Real-time queue and exchange monitoring
-- Connection and channel health checks
-- Message flow metrics
-- Consumer lag tracking
-- Dead letter queue monitoring
-- Performance metrics
-- CLI and TUI monitoring tools
+### Go Implementation Features:
+- ✅ Real-time queue and exchange monitoring
+- ✅ Connection and channel health checks  
+- ✅ Message flow metrics
+- ✅ Consumer lag tracking
+- ✅ Dead letter queue monitoring
+- ✅ Performance metrics
+- ✅ CLI and TUI monitoring tools
+
+### .NET Implementation Features:
+- ✅ Basic RabbitMQ connection health checks
+- ❌ Advanced metrics and monitoring not available
+- ❌ Service-scoped monitoring not implemented
+- ❌ No CLI/TUI tools
 
 ## Health Monitoring
 
-### Basic Health Checks
+### Health Monitoring Capabilities
 
 <table>
 <tr>
-<th>.NET</th>
-<th>Go</th>
+<th>.NET (Basic Only)</th>
+<th>Go (Enterprise)</th>
 </tr>
 <tr>
 <td>
 
 ```csharp
-// Configure health checks
+// Basic RabbitMQ connection health check only
 services.AddHealthChecks()
     .AddRabbitMQ(
         rabbitConnectionString: "amqp://localhost",
         name: "rabbitmq",
         failureStatus: HealthStatus.Unhealthy,
-        tags: new[] { "messaging", "infrastructure" })
-    .AddCheck<MessageProcessingHealthCheck>(
-        "message-processing",
-        failureStatus: HealthStatus.Degraded,
-        tags: new[] { "messaging", "processing" });
+        tags: new[] { "messaging" });
 
-// Custom health check
-public class MessageProcessingHealthCheck : IHealthCheck
+// Simple custom health check
+public class BasicMessagingHealthCheck : IHealthCheck
 {
-    private readonly IMessageMonitor _monitor;
+    private readonly IConnectionManager _connectionManager;
     
     public async Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
         CancellationToken cancellationToken)
     {
-        var stats = await _monitor.GetStatsAsync();
-        
-        // Check error rate
-        var errorRate = stats.ErrorCount / 
-            (double)stats.TotalProcessed;
-        
-        if (errorRate > 0.05) // 5% error threshold
+        try
+        {
+            // Basic connection check only
+            if (!_connectionManager.IsConnected)
+            {
+                return HealthCheckResult.Unhealthy(
+                    "RabbitMQ connection is not established");
+            }
+            
+            return HealthCheckResult.Healthy("RabbitMQ connected");
+        }
+        catch (Exception ex)
         {
             return HealthCheckResult.Unhealthy(
-                $"High error rate: {errorRate:P}");
+                "Health check failed", ex);
         }
-        
-        // Check processing lag
-        if (stats.QueueDepth > 1000)
-        {
-            return HealthCheckResult.Degraded(
-                $"High queue depth: {stats.QueueDepth}");
-        }
-        
-        return HealthCheckResult.Healthy(
-            $"Processing {stats.MessagesPerSecond} msg/s");
     }
 }
 ```
+
+> **Note**: Advanced metrics like error rates, queue depth monitoring, and processing statistics are not available in the .NET implementation.
 
 </td>
 <td>

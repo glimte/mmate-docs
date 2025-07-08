@@ -44,47 +44,6 @@ if err != nil {
 
 ### Basic Send with Acknowledgment
 
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-public class OrderService
-{
-    private readonly IMessageSender _sender;
-    
-    public async Task<ProcessingAcknowledgment> CreateOrderAsync(
-        CreateOrderCommand command)
-    {
-        // Send command and wait for processing acknowledgment
-        var ackResponse = await _sender.SendWithAckAsync(
-            command, 
-            "orders-queue",
-            timeout: TimeSpan.FromSeconds(60));
-        
-        // Wait for acknowledgment
-        var ack = await ackResponse.WaitForAcknowledgmentAsync();
-        
-        if (ack.Success)
-        {
-            Console.WriteLine($"Order processed in {ack.ProcessingTime}");
-            return ack;
-        }
-        else
-        {
-            throw new Exception($"Order processing failed: {ack.ErrorMessage}");
-        }
-    }
-}
-```
-
-</td>
-<td>
-
 ```go
 func (s *OrderService) CreateOrder(ctx context.Context, command *CreateOrderCommand) error {
     // Send command and get acknowledgment response
@@ -108,49 +67,7 @@ func (s *OrderService) CreateOrder(ctx context.Context, command *CreateOrderComm
 }
 ```
 
-</td>
-</tr>
-</table>
-
 ### Batch Operations with Acknowledgment
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-public async Task<List<ProcessingAcknowledgment>> ProcessMultipleOrdersAsync(
-    List<CreateOrderCommand> commands)
-{
-    var ackTasks = new List<Task<ProcessingAcknowledgment>>();
-    
-    // Send all commands
-    foreach (var command in commands)
-    {
-        var ackResponse = await _sender.SendWithAckAsync(
-            command, "orders-queue");
-        ackTasks.Add(ackResponse.WaitForAcknowledgmentAsync());
-    }
-    
-    // Wait for all acknowledgments
-    var acknowledgments = await Task.WhenAll(ackTasks);
-    
-    // Process results
-    var successful = acknowledgments.Count(a => a.Success);
-    var failed = acknowledgments.Count(a => !a.Success);
-    
-    Console.WriteLine($"Processed: {successful} successful, {failed} failed");
-    return acknowledgments.ToList();
-}
-```
-
-</td>
-<td>
 
 ```go
 func (s *OrderService) ProcessMultipleOrders(
@@ -193,55 +110,7 @@ func (s *OrderService) ProcessMultipleOrders(
 }
 ```
 
-</td>
-</tr>
-</table>
-
 ## Event Publishing with Acknowledgment
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-public async Task PublishOrderCreatedEventAsync(OrderCreatedEvent evt)
-{
-    // Publish event and track acknowledgment
-    var ackResponse = await _publisher.PublishWithAckAsync(evt);
-    
-    // Optional: Wait for acknowledgment or handle async
-    _ = Task.Run(async () =>
-    {
-        try
-        {
-            var ack = await ackResponse.WaitForAcknowledgmentAsync(
-                timeout: TimeSpan.FromSeconds(10));
-            
-            if (ack.Success)
-            {
-                _metrics.Increment("events.published.confirmed");
-            }
-            else
-            {
-                _metrics.Increment("events.published.failed");
-                _logger.LogWarning("Event processing failed: {Error}", 
-                    ack.ErrorMessage);
-            }
-        }
-        catch (TimeoutException)
-        {
-            _metrics.Increment("events.published.timeout");
-        }
-    });
-}
-```
-
-</td>
-<td>
 
 ```go
 func (s *OrderService) PublishOrderCreatedEvent(
@@ -278,53 +147,9 @@ func (s *OrderService) PublishOrderCreatedEvent(
 }
 ```
 
-</td>
-</tr>
-</table>
-
 ## Automatic Processing Acknowledgment
 
 ### Handler-Level Auto-Acknowledgment
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-[MessageHandler("orders-queue")]
-[AutoAcknowledgment] // Automatic acknowledgment interceptor
-public class OrderHandler : IMessageHandler<CreateOrderCommand>
-{
-    public async Task HandleAsync(
-        CreateOrderCommand command, 
-        CancellationToken ct)
-    {
-        var startTime = DateTime.UtcNow;
-        
-        try
-        {
-            // Process the order
-            var order = await _orderService.CreateOrderAsync(command);
-            
-            // Success acknowledgment sent automatically
-            // Includes processing time and success status
-        }
-        catch (Exception ex)
-        {
-            // Error acknowledgment sent automatically
-            // Includes error message and processing time
-            throw;
-        }
-    }
-}
-```
-
-</td>
-<td>
 
 ```go
 // Acknowledgment tracking is automatically enabled when configured
@@ -357,55 +182,7 @@ err = client.Subscriber().Subscribe(
 )
 ```
 
-</td>
-</tr>
-</table>
-
 ## Custom Acknowledgment Messages
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-public async Task HandleAsync(
-    ProcessPaymentCommand command, 
-    CancellationToken ct)
-{
-    var result = await _paymentService.ProcessAsync(command);
-    
-    // Send custom acknowledgment with additional metadata
-    var ack = new ProcessingAcknowledgment
-    {
-        CorrelationID = command.CorrelationID,
-        MessageID = command.ID,
-        Success = result.Success,
-        ProcessingTime = result.Duration,
-        Metadata = new Dictionary<string, object>
-        {
-            ["TransactionId"] = result.TransactionId,
-            ["PaymentMethod"] = command.PaymentMethod,
-            ["Amount"] = command.Amount,
-            ["Currency"] = command.Currency
-        }
-    };
-    
-    if (!result.Success)
-    {
-        ack.ErrorMessage = result.ErrorMessage;
-        ack.Metadata["ErrorCode"] = result.ErrorCode;
-    }
-    
-    await _ackService.SendAcknowledgmentAsync(ack);
-}
-```
-
-</td>
-<td>
 
 ```go
 func (h *PaymentHandler) HandleProcessPayment(
@@ -445,63 +222,9 @@ func (h *PaymentHandler) HandleProcessPayment(
 }
 ```
 
-</td>
-</tr>
-</table>
-
 ## Monitoring and Metrics
 
 ### Acknowledgment Metrics
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-public class AcknowledgmentMetricsInterceptor : MessageInterceptorBase
-{
-    private readonly IMetrics _metrics;
-    
-    public override async Task OnAcknowledgmentReceivedAsync(
-        ProcessingAcknowledgment ack)
-    {
-        var tags = new[]
-        {
-            ("message_type", ack.MessageType),
-            ("success", ack.Success.ToString()),
-            ("processor_id", ack.ProcessorID)
-        };
-        
-        _metrics.Increment("acknowledgment.received", tags);
-        _metrics.Histogram("acknowledgment.processing_time", 
-            ack.ProcessingTime.TotalMilliseconds, tags);
-        
-        if (!ack.Success)
-        {
-            _metrics.Increment("acknowledgment.errors", 
-                tags.Concat(new[] { ("error", ack.ErrorMessage) }));
-        }
-    }
-    
-    public override async Task OnAcknowledgmentTimeoutAsync(
-        string correlationId, 
-        string messageType)
-    {
-        _metrics.Increment("acknowledgment.timeout", new[]
-        {
-            ("message_type", messageType),
-            ("correlation_id", correlationId)
-        });
-    }
-}
-```
-
-</td>
-<td>
 
 ```go
 type AcknowledgmentMetrics struct {
@@ -554,73 +277,7 @@ go func() {
 }()
 ```
 
-</td>
-</tr>
-</table>
-
 ## Testing Acknowledgment Tracking
-
-<table>
-<tr>
-<th>.NET</th>
-<th>Go</th>
-</tr>
-<tr>
-<td>
-
-```csharp
-[Test]
-public async Task SendWithAck_ShouldReceiveSuccessAcknowledgment()
-{
-    // Arrange
-    var command = new CreateOrderCommand { CustomerId = "123" };
-    var mockHandler = new Mock<IMessageHandler<CreateOrderCommand>>();
-    mockHandler.Setup(h => h.HandleAsync(It.IsAny<CreateOrderCommand>(), 
-        It.IsAny<CancellationToken>()))
-        .Returns(Task.CompletedTask);
-    
-    // Setup test handler
-    _testHarness.RegisterHandler("orders-queue", mockHandler.Object);
-    
-    // Act
-    var ackResponse = await _sender.SendWithAckAsync(command, "orders-queue");
-    var ack = await ackResponse.WaitForAcknowledgmentAsync(
-        timeout: TimeSpan.FromSeconds(5));
-    
-    // Assert
-    Assert.IsTrue(ack.Success);
-    Assert.AreEqual(command.ID, ack.MessageID);
-    Assert.AreEqual(command.CorrelationID, ack.CorrelationID);
-    Assert.IsTrue(ack.ProcessingTime > TimeSpan.Zero);
-    mockHandler.Verify(h => h.HandleAsync(command, 
-        It.IsAny<CancellationToken>()), Times.Once);
-}
-
-[Test]
-public async Task SendWithAck_ShouldReceiveErrorAcknowledgment()
-{
-    // Arrange
-    var command = new CreateOrderCommand { CustomerId = "invalid" };
-    var mockHandler = new Mock<IMessageHandler<CreateOrderCommand>>();
-    mockHandler.Setup(h => h.HandleAsync(It.IsAny<CreateOrderCommand>(), 
-        It.IsAny<CancellationToken>()))
-        .ThrowsAsync(new ArgumentException("Invalid customer"));
-    
-    _testHarness.RegisterHandler("orders-queue", mockHandler.Object);
-    
-    // Act
-    var ackResponse = await _sender.SendWithAckAsync(command, "orders-queue");
-    var ack = await ackResponse.WaitForAcknowledgmentAsync();
-    
-    // Assert
-    Assert.IsFalse(ack.Success);
-    Assert.AreEqual("Invalid customer", ack.ErrorMessage);
-    Assert.IsTrue(ack.ProcessingTime > TimeSpan.Zero);
-}
-```
-
-</td>
-<td>
 
 ```go
 func TestSendWithAck_ShouldReceiveSuccessAcknowledgment(t *testing.T) {
@@ -687,10 +344,6 @@ func TestSendWithAck_ShouldReceiveErrorAcknowledgment(t *testing.T) {
     assert.Greater(t, ack.ProcessingTime, time.Duration(0))
 }
 ```
-
-</td>
-</tr>
-</table>
 
 ## Best Practices
 

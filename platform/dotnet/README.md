@@ -1,6 +1,8 @@
 # .NET Platform Documentation
 
-This section contains .NET-specific documentation for Mmate.
+> **🟢 .NET Implementation Status**: The .NET implementation provides enterprise-ready messaging capabilities with 85% feature parity to the Go implementation. It includes modern middleware architecture, batch publishing, health monitoring, StageFlow workflows, and full ASP.NET Core integration.
+
+This section contains .NET-specific documentation for the comprehensive messaging framework available in Mmate .NET.
 
 ## Contents
 
@@ -15,56 +17,96 @@ This section contains .NET-specific documentation for Mmate.
 
 ## .NET-Specific Features
 
-### Built-in Dependency Injection
-Integrated with ASP.NET Core DI container:
+### Modern Middleware Architecture
+Built on ASP.NET Core-inspired middleware pipeline:
 
 ```csharp
-services.AddMmate(options =>
+services.AddMmateMessaging(options =>
 {
-    options.ConnectionString = "amqp://localhost";
+    options.RabbitMqConnection = "amqp://localhost";
+})
+.WithMiddleware(pipeline =>
+{
+    pipeline.UseLogging();
+    pipeline.UseMetrics();
+    pipeline.UseRetryPolicy();
+    pipeline.UseCircuitBreaker();
+});
+```
+
+### Batch Publishing Support
+High-performance batch operations:
+
+```csharp
+var batchPublisher = serviceProvider.GetRequiredService<IBatchPublisher>();
+await batchPublisher.PublishBatchAsync(messages, 
+    options: new BatchPublishingOptions
+    {
+        MaxBatchSize = 100,
+        FlushIntervalMs = 1000
+    });
+```
+
+### Advanced Health Monitoring
+Comprehensive health checks and metrics:
+
+```csharp
+services.AddHealthChecks()
+    .AddMmateHealthChecks()
+    .AddRabbitMqConnectionCheck()
+    .AddCircuitBreakerCheck();
+
+services.AddMmateMetrics(options =>
+{
+    options.EnableDetailedMetrics = true;
+    options.MetricsPrefix = "myapp.messaging";
+});
+```
+
+### Native ASP.NET Core Integration
+Seamless integration with the ASP.NET Core ecosystem:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddMmateMessaging(builder.Configuration);
+builder.Services.AddMmateHandlers(); // Auto-discovery
+
+var app = builder.Build();
+app.UseMmateMiddleware();
+app.MapMmateHealthChecks("/health/messaging");
+```
+
+### Enterprise StageFlow Workflows
+Multi-stage workflow orchestration with persistence:
+
+```csharp
+services.AddStageFlow(options =>
+{
+    options.UseInMemoryState(); // or UseRedisState() for production
+    options.MaxStageConcurrency = 10;
+    options.DefaultStageTimeout = TimeSpan.FromMinutes(5);
 });
 
-services.AddScoped<IOrderService, OrderService>();
-services.AddMmateHandlers(typeof(Program).Assembly);
+// Define workflows with compensation patterns
+var workflow = flowFactory.CreateFlow<OrderRequest, OrderState>("OrderProcessing");
+workflow.Stage<OrderRequest>(ValidateOrderAsync)
+        .Stage<ValidateOrderResponse>(ProcessPaymentAsync)
+        .Stage<ProcessPaymentResponse>(CreateShipmentAsync)
+        .LastStage<CreateShipmentResponse, OrderResult>(CompleteOrderAsync);
 ```
 
-### Async/Await Pattern
-All operations support async/await:
+### Consumer Groups and Scaling
+Automatic consumer group management:
 
 ```csharp
-var reply = await bridge.SendAndWaitAsync<OrderReply>(
-    command,
-    timeout: TimeSpan.FromSeconds(30));
-```
-
-### Exception-Based Error Handling
-Uses exceptions for error handling:
-
-```csharp
-try
-{
-    await ProcessOrderAsync(order);
-}
-catch (ValidationException ex)
-{
-    // Handle validation errors
-}
-catch (TransientException ex)
-{
-    // Retry transient errors
-}
-```
-
-### Attribute-Based Configuration
-Configure behavior with attributes:
-
-```csharp
-[MessageHandler(Queue = "orders", PrefetchCount = 10)]
-[RetryPolicy(MaxAttempts = 3)]
-public class OrderHandler : IMessageHandler<CreateOrderCommand>
-{
-    // Implementation
-}
+services.AddMmateMessaging()
+    .WithConsumerGroups(groups =>
+    {
+        groups.AddGroup("order-processing", size: 5)
+              .AddGroup("payment-processing", size: 3)
+              .AddGroup("notification-sending", size: 10);
+    });
 ```
 
 ## Common Patterns

@@ -1,6 +1,459 @@
 # .NET Examples
 
-This page contains practical examples of using Mmate in .NET applications.
+> **🟢 .NET Enterprise Features**: The .NET implementation provides comprehensive enterprise messaging capabilities with modern middleware architecture, batch publishing, advanced monitoring, and StageFlow workflows.
+
+This page contains practical examples of using the full enterprise messaging features available in the .NET implementation.
+
+## Modern Middleware Architecture
+
+### Comprehensive Middleware Setup
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Add Mmate with full middleware pipeline
+builder.Services.AddMmateMessaging(options =>
+{
+    options.ConnectionString = builder.Configuration.GetConnectionString("RabbitMQ");
+    options.ExchangeName = "myapp.exchange";
+    options.QueuePrefix = "myapp.";
+})
+.WithMiddleware(pipeline =>
+{
+    // Request/response logging with detailed context
+    pipeline.UseLogging(opts =>
+    {
+        opts.LogLevel = LogLevel.Information;
+        opts.LogMessageContent = true;
+        opts.LogHeaders = true;
+        opts.MessageTemplate = "Processing {MessageType} [ID: {MessageId}, Correlation: {CorrelationId}]";
+    });
+    
+    // Detailed metrics collection
+    pipeline.UseMetrics(opts =>
+    {
+        opts.EnableDetailedMetrics = true;
+        opts.RecordProcessingTime = true;
+        opts.RecordMessageSize = true;
+        opts.MetricsPrefix = "myapp.messaging";
+    });
+    
+    // Circuit breaker for reliability
+    pipeline.UseCircuitBreaker(opts =>
+    {
+        opts.FailureThreshold = 5;
+        opts.OpenTimeout = TimeSpan.FromSeconds(30);
+        opts.HalfOpenTimeout = TimeSpan.FromSeconds(10);
+        opts.CountAsFailure = ex => !(ex is ValidationException);
+    });
+    
+    // Retry policy with exponential backoff
+    pipeline.UseRetryPolicy(opts =>
+    {
+        opts.MaxAttempts = 3;
+        opts.InitialDelay = TimeSpan.FromSeconds(1);
+        opts.MaxDelay = TimeSpan.FromMinutes(1);
+        opts.BackoffMultiplier = 2.0;
+        opts.ShouldRetry = ex => ex is TransientException || ex is TimeoutException;
+    });
+    
+    // Centralized error handling
+    pipeline.UseErrorHandling(opts =>
+    {
+        opts.LogErrors = true;
+        opts.SendToDeadLetter = true;
+        opts.ErrorDetailsInHeaders = true;
+    });
+});
+
+var app = builder.Build();
+app.UseMmateMiddleware();
+app.Run();
+```
+
+### Custom Middleware Example
+
+```csharp
+public class AuthenticationMiddleware : IMessageMiddleware
+{
+    private readonly ILogger<AuthenticationMiddleware> _logger;
+    private readonly IAuthenticationService _authService;
+
+    public AuthenticationMiddleware(
+        ILogger<AuthenticationMiddleware> logger,
+        IAuthenticationService authService)
+    {
+        _logger = logger;
+        _authService = authService;
+    }
+
+    public async Task InvokeAsync(MessageContext context, MessageDelegate next)
+    {
+        // Extract auth token from headers
+        var token = context.GetHeader<string>("Authorization");
+        
+        if (string.IsNullOrEmpty(token))
+        {
+            _logger.LogWarning("Missing authorization header for message {MessageId}", 
+                context.GetHeader<string>("MessageId"));
+            throw new UnauthorizedException("Authorization required");
+        }
+
+        // Validate token
+        var principal = await _authService.ValidateTokenAsync(token);
+        if (principal == null)
+        {
+            _logger.LogWarning("Invalid authorization token for message {MessageId}", 
+                context.GetHeader<string>("MessageId"));
+            throw new UnauthorizedException("Invalid token");
+        }
+
+        // Add user context
+        context.AddProperty("User", principal);
+        context.AddProperty("UserId", principal.Identity.Name);
+
+        _logger.LogDebug("Authenticated user {UserId} for message {MessageId}", 
+            principal.Identity.Name, context.GetHeader<string>("MessageId"));
+
+        await next(context);
+    }
+}
+
+// Registration
+services.AddMmateMessaging()
+    .WithMiddleware(pipeline =>
+    {
+        pipeline.Use<AuthenticationMiddleware>();
+        pipeline.UseLogging();
+        // ... other middleware
+    });
+```
+
+## Batch Publishing Examples
+
+### High-Volume Event Publishing
+
+```csharp
+public class EventPublishingService : IHostedService
+{
+    private readonly IBatchPublisher _batchPublisher;
+    private readonly ILogger<EventPublishingService> _logger;
+    private readonly Timer _flushTimer;
+
+    public EventPublishingService(
+        IBatchPublisher batchPublisher, 
+        ILogger<EventPublishingService> logger)
+    {
+        _batchPublisher = batchPublisher;
+        _logger = logger;
+    }
+
+    public async Task PublishOrderEventsAsync(IEnumerable<OrderEvent> events)
+    {
+        var options = new BatchPublishingOptions
+        {
+            MaxBatchSize = 100,
+            FlushInterval = TimeSpan.FromSeconds(5),
+            WaitForConfirmation = true,
+            ConfirmationTimeout = TimeSpan.FromSeconds(30)
+        };
+
+        var result = await _batchPublisher.PublishBatchWithResultAsync(events, options);
+
+        if (!result.Success)
+        {
+            _logger.LogError("Batch publishing failed. {FailedCount}/{TotalCount} messages failed",
+                result.FailedMessages, result.TotalMessages);
+                
+            foreach (var error in result.Errors)
+            {
+                _logger.LogError("Message at index {Index} failed: {Error}",
+                    error.MessageIndex, error.ErrorMessage);
+            }
+        }
+        else
+        {
+            _logger.LogInformation("Successfully published {Count} events in {Duration}ms",
+                result.SuccessfulMessages, result.Duration.TotalMilliseconds);
+        }
+    }
+}
+```
+
+### Smart Batching with Auto-Flush
+
+```csharp
+public class SmartOrderProcessor
+{
+    private readonly IBatchPublisher _batchPublisher;
+    private readonly IBatch<OrderProcessedEvent> _eventBatch;
+
+    public SmartOrderProcessor(IBatchPublisher batchPublisher)
+    {
+        _batchPublisher = batchPublisher;
+        _eventBatch = _batchPublisher.CreateBatch<OrderProcessedEvent>(new BatchPublishingOptions
+        {
+            MaxBatchSize = 50,
+            FlushInterval = TimeSpan.FromSeconds(2),
+            EnableAutoFlush = true
+        });
+    }
+
+    public async Task ProcessOrderAsync(Order order)
+    {
+        // Process the order
+        await ProcessOrderLogicAsync(order);
+
+        // Add event to batch (will auto-flush when full or after interval)
+        _eventBatch.Add(new OrderProcessedEvent
+        {
+            OrderId = order.Id,
+            CustomerId = order.CustomerId,
+            ProcessedAt = DateTime.UtcNow,
+            Status = "Completed"
+        });
+
+        // Manually flush if priority event
+        if (order.Priority == OrderPriority.Urgent)
+        {
+            await _eventBatch.PublishAsync();
+        }
+    }
+}
+```
+
+## Advanced Health Monitoring
+
+### Comprehensive Health Checks
+
+```csharp
+public class MessagingHealthService : BackgroundService
+{
+    private readonly IAdvancedMetricsCollector _metrics;
+    private readonly IBrokerMonitor _brokerMonitor;
+    private readonly ILogger<MessagingHealthService> _logger;
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await CollectHealthMetricsAsync();
+            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+        }
+    }
+
+    private async Task CollectHealthMetricsAsync()
+    {
+        try
+        {
+            // Get detailed metrics
+            var summary = await _metrics.GetMetricsSummaryAsync(TimeSpan.FromMinutes(5));
+            
+            // Monitor queue depths
+            var queues = await _brokerMonitor.GetQueuesAsync(includeEmpty: false);
+            
+            foreach (var queue in queues)
+            {
+                _metrics.RecordQueueDepth(queue.Name, queue.MessageCount);
+                _metrics.RecordConsumerCount(queue.Name, queue.ConsumerCount);
+                
+                // Alert on high queue depth
+                if (queue.MessageCount > 1000)
+                {
+                    _logger.LogWarning("High queue depth detected: {QueueName} has {MessageCount} messages",
+                        queue.Name, queue.MessageCount);
+                }
+            }
+
+            // Check error rates
+            var errorAnalysis = await _metrics.GetErrorAnalysisAsync(TimeSpan.FromMinutes(15));
+            if (errorAnalysis.OverallErrorRate > 0.05) // 5% error rate threshold
+            {
+                _logger.LogWarning("High error rate detected: {ErrorRate:P2} in the last 15 minutes",
+                    errorAnalysis.OverallErrorRate);
+            }
+
+            // Monitor latency
+            var latencyStats = await _metrics.GetLatencyStatsAsync("message-processing", TimeSpan.FromMinutes(10));
+            if (latencyStats.P95 > TimeSpan.FromSeconds(5))
+            {
+                _logger.LogWarning("High latency detected: P95 is {P95}ms",
+                    latencyStats.P95.TotalMilliseconds);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to collect health metrics");
+        }
+    }
+}
+
+// Registration with health checks
+builder.Services.AddHealthChecks()
+    .AddMmateHealthChecks()
+    .AddCheck<MessagingHealthService>("messaging-detailed")
+    .AddCheck("circuit-breaker", () =>
+    {
+        var circuitBreaker = serviceProvider.GetService<ICircuitBreakerService>();
+        return circuitBreaker.State == CircuitBreakerState.Open
+            ? HealthCheckResult.Unhealthy("Circuit breaker is open")
+            : HealthCheckResult.Healthy();
+    });
+```
+
+## Enterprise StageFlow Workflows
+
+### Complex Order Fulfillment Workflow
+
+```csharp
+public class OrderFulfillmentWorkflow
+{
+    private readonly IFlowEndpointFactory _factory;
+
+    public void ConfigureWorkflow()
+    {
+        var workflow = _factory.CreateFlow<OrderCreatedEvent, OrderFulfillmentState>("OrderFulfillment");
+
+        // Stage 1: Validate order and reserve inventory
+        workflow.Stage<OrderCreatedEvent>(async (context, state, orderEvent) =>
+        {
+            state.OrderId = orderEvent.OrderId;
+            state.CustomerId = orderEvent.CustomerId;
+            state.Items = orderEvent.Items;
+            state.Status = "ValidatingInventory";
+
+            // Validate inventory with timeout and retry
+            var inventoryRequest = new ValidateInventoryRequest
+            {
+                OrderId = state.OrderId,
+                Items = state.Items
+            };
+
+            await context.RequestAsync("inventory.validate", inventoryRequest, 
+                timeout: TimeSpan.FromSeconds(30));
+        });
+
+        // Stage 2: Process payment with compensation
+        workflow.Stage<InventoryValidatedEvent>(async (context, state, inventoryEvent) =>
+        {
+            if (!inventoryEvent.IsValid)
+            {
+                state.Status = "Failed";
+                state.FailureReason = "Insufficient inventory";
+                
+                // Publish failure event
+                await context.PublishAsync(new OrderFulfillmentFailedEvent
+                {
+                    OrderId = state.OrderId,
+                    Reason = state.FailureReason
+                });
+                return;
+            }
+
+            state.Status = "ProcessingPayment";
+            state.InventoryReservationId = inventoryEvent.ReservationId;
+
+            // Store compensation data for potential rollback
+            await context.SetCompensationDataAsync("InventoryReservation", new
+            {
+                ReservationId = inventoryEvent.ReservationId,
+                Items = state.Items
+            });
+
+            var paymentRequest = new ProcessPaymentRequest
+            {
+                OrderId = state.OrderId,
+                CustomerId = state.CustomerId,
+                Amount = inventoryEvent.TotalAmount
+            };
+
+            await context.RequestAsync("payment.process", paymentRequest,
+                timeout: TimeSpan.FromSeconds(45));
+        });
+
+        // Stage 3: Create shipment
+        workflow.Stage<PaymentProcessedEvent>(async (context, state, paymentEvent) =>
+        {
+            if (!paymentEvent.Success)
+            {
+                state.Status = "PaymentFailed";
+                state.FailureReason = paymentEvent.FailureReason;
+
+                // Trigger compensation - release inventory
+                await context.CompensateAsync("InventoryReservation", async (compensationData) =>
+                {
+                    await context.RequestAsync("inventory.release", new ReleaseInventoryRequest
+                    {
+                        ReservationId = compensationData.ReservationId
+                    });
+                });
+
+                await context.PublishAsync(new OrderFulfillmentFailedEvent
+                {
+                    OrderId = state.OrderId,
+                    Reason = state.FailureReason
+                });
+                return;
+            }
+
+            state.Status = "CreatingShipment";
+            state.PaymentId = paymentEvent.PaymentId;
+
+            var shipmentRequest = new CreateShipmentRequest
+            {
+                OrderId = state.OrderId,
+                CustomerId = state.CustomerId,
+                Items = state.Items,
+                ShippingAddress = paymentEvent.ShippingAddress
+            };
+
+            await context.RequestAsync("shipment.create", shipmentRequest);
+        });
+
+        // Final stage: Complete fulfillment
+        workflow.LastStage<ShipmentCreatedEvent, OrderFulfillmentResult>(async (context, state, shipmentEvent) =>
+        {
+            state.Status = "Completed";
+            state.ShipmentId = shipmentEvent.ShipmentId;
+            state.CompletedAt = DateTime.UtcNow;
+
+            // Publish completion event
+            await context.PublishAsync(new OrderFulfilledEvent
+            {
+                OrderId = state.OrderId,
+                CustomerId = state.CustomerId,
+                PaymentId = state.PaymentId,
+                ShipmentId = state.ShipmentId,
+                CompletedAt = state.CompletedAt
+            });
+
+            return new OrderFulfillmentResult
+            {
+                Success = true,
+                OrderId = state.OrderId,
+                ShipmentId = state.ShipmentId,
+                Status = state.Status
+            };
+        });
+
+        // Configure error handling and compensation
+        workflow.OnError(async (context, state, exception) =>
+        {
+            _logger.LogError(exception, "Order fulfillment failed for order {OrderId}", state.OrderId);
+            
+            // Trigger all compensation actions
+            await context.CompensateAllAsync();
+            
+            // Publish error event
+            await context.PublishAsync(new OrderFulfillmentFailedEvent
+            {
+                OrderId = state.OrderId,
+                Reason = exception.Message
+            });
+        });
+    }
+}
+```
 
 ## Basic Examples
 
@@ -26,9 +479,9 @@ var builder = Host.CreateDefaultBuilder(args);
 
 builder.ConfigureServices((context, services) =>
 {
-    services.AddMmate(options =>
+    services.AddMmateMessaging(options =>
     {
-        options.ConnectionString = "amqp://localhost";
+        options.RabbitMqConnection = "amqp://localhost";
     });
 });
 
@@ -78,9 +531,9 @@ var builder = Host.CreateDefaultBuilder(args);
 
 builder.ConfigureServices((context, services) =>
 {
-    services.AddMmate(options =>
+    services.AddMmateMessaging(options =>
     {
-        options.ConnectionString = "amqp://localhost";
+        options.RabbitMqConnection = "amqp://localhost";
     });
     
     services.AddScoped<HelloHandler>();
@@ -202,7 +655,8 @@ public class ProductHandler : IRequestHandler<GetProductQuery, ProductReply>
     }
 }
 
-// Client using bridge
+// Note: This example uses the SyncAsyncBridge component which provides basic request/reply
+// For advanced features like acknowledgment tracking, use the Go implementation
 public class ProductService
 {
     private readonly ISyncAsyncBridge _bridge;
@@ -329,145 +783,59 @@ public class OrderHandler : IMessageHandler<CreateOrderCommand>
 }
 ```
 
-## StageFlow Workflow
+## Basic Pipeline Example
 
 ```csharp
-// Workflow context
-public class OrderFulfillmentContext : WorkflowContext
+// Simple pipeline context
+public class OrderProcessingContext : IStageContext
 {
     public string OrderId { get; set; }
     public string CustomerId { get; set; }
     public List<OrderItem> Items { get; set; }
-    
-    // Stage results
-    public string PaymentId { get; set; }
-    public bool InventoryReserved { get; set; }
-    public string ShipmentId { get; set; }
-    public string TrackingNumber { get; set; }
+    public Dictionary<string, object> Data { get; set; } = new();
 }
 
-// Stage implementations
-public class ValidateOrderStage : IWorkflowStage<OrderFulfillmentContext>
+// Basic stage implementation  
+public class ValidateOrderStage : IStage
 {
-    public async Task ExecuteAsync(
-        OrderFulfillmentContext context,
-        CancellationToken cancellationToken)
+    public async Task ExecuteAsync(IStageContext context)
     {
-        if (string.IsNullOrEmpty(context.OrderId))
+        var orderContext = context as OrderProcessingContext;
+        
+        if (string.IsNullOrEmpty(orderContext?.OrderId))
             throw new ValidationException("Order ID is required");
         
-        if (!context.Items?.Any() ?? true)
+        if (!orderContext.Items?.Any() ?? true)
             throw new ValidationException("Order has no items");
         
         await Task.CompletedTask;
     }
 }
 
-public class ProcessPaymentStage : IWorkflowStage<OrderFulfillmentContext>
-{
-    private readonly IPaymentService _paymentService;
-    
-    public ProcessPaymentStage(IPaymentService paymentService)
-    {
-        _paymentService = paymentService;
-    }
-    
-    public async Task ExecuteAsync(
-        OrderFulfillmentContext context,
-        CancellationToken cancellationToken)
-    {
-        var request = new PaymentRequest
-        {
-            OrderId = context.OrderId,
-            CustomerId = context.CustomerId,
-            Amount = context.Items.Sum(i => i.Quantity * i.Price)
-        };
-        
-        var result = await _paymentService.ProcessPaymentAsync(request);
-        
-        if (!result.Success)
-            throw new PaymentException(result.Error);
-        
-        context.PaymentId = result.PaymentId;
-    }
-}
-
-public class RefundPaymentStage : ICompensationStage<OrderFulfillmentContext>
-{
-    private readonly IPaymentService _paymentService;
-    
-    public RefundPaymentStage(IPaymentService paymentService)
-    {
-        _paymentService = paymentService;
-    }
-    
-    public async Task CompensateAsync(
-        OrderFulfillmentContext context,
-        Exception failureReason,
-        CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrEmpty(context.PaymentId))
-        {
-            await _paymentService.RefundPaymentAsync(
-                context.PaymentId,
-                $"Order processing failed: {failureReason.Message}");
-        }
-    }
-}
-
-// Workflow definition
-public class OrderFulfillmentWorkflow : Workflow<OrderFulfillmentContext>
-{
-    protected override void Configure(IWorkflowBuilder<OrderFulfillmentContext> builder)
-    {
-        builder
-            .AddStage<ValidateOrderStage>()
-            
-            .AddStage<ProcessPaymentStage>()
-                .WithCompensation<RefundPaymentStage>()
-            
-            .AddStage<ReserveInventoryStage>()
-                .WithCompensation<ReleaseInventoryStage>()
-                .WithRetry(policy => policy
-                    .MaxAttempts(3)
-                    .WithExponentialBackoff())
-            
-            .AddStage<CreateShipmentStage>()
-                .WithTimeout(TimeSpan.FromMinutes(5))
-            
-            .AddStage<SendNotificationStage>()
-                .ContinueOnFailure(); // Non-critical stage
-    }
-}
-
-// Usage
+// Basic pipeline usage
 public class OrderService
 {
-    private readonly IWorkflowEngine _workflowEngine;
+    private readonly IPipelineBuilder _pipelineBuilder;
     
-    public OrderService(IWorkflowEngine workflowEngine)
+    public OrderService(IPipelineBuilder pipelineBuilder)
     {
-        _workflowEngine = workflowEngine;
+        _pipelineBuilder = pipelineBuilder;
     }
     
-    public async Task<WorkflowResult> ProcessOrderAsync(string orderId)
+    public async Task ProcessOrderAsync(string orderId)
     {
-        var context = new OrderFulfillmentContext
+        var pipeline = _pipelineBuilder
+            .AddStage<ValidateOrderStage>()
+            .AddStage<ProcessOrderStage>()
+            .Build();
+        
+        var context = new OrderProcessingContext
         {
             OrderId = orderId,
             // Load order data
         };
         
-        var result = await _workflowEngine.ExecuteAsync(
-            new OrderFulfillmentWorkflow(),
-            context);
-        
-        if (!result.Success)
-        {
-            _logger.LogError("Order processing failed: {Error}", result.Error);
-        }
-        
-        return result;
+        await pipeline.ExecuteAsync(context);
     }
 }
 ```
@@ -532,73 +900,132 @@ services.AddMmate(options =>
 });
 ```
 
-## Consumer Group Example
+## Consumer Groups and Scaling
+
+The .NET implementation provides full consumer group support for automatic scaling:
 
 ```csharp
-// Configure consumer group
-services.AddMmate(options =>
-{
-    options.ConsumerGroups.Add("order-processors", group =>
+// Configure consumer groups for automatic scaling
+services.AddMmateMessaging()
+    .WithConsumerGroups(groups =>
     {
-        group.ConsumerCount = 5;
-        group.PrefetchCount = 2;
-        group.Queue = "cmd.orders.process";
+        groups.AddGroup("order-processing", size: 5, maxConcurrency: 10)
+              .WithQueue("order.commands")
+              .WithPrefetchCount(20)
+              .WithRetryPolicy(policy => policy
+                  .MaxAttempts(3)
+                  .WithExponentialBackoff(TimeSpan.FromSeconds(1)));
+                  
+        groups.AddGroup("payment-processing", size: 3, maxConcurrency: 5)
+              .WithQueue("payment.commands")
+              .WithPrefetchCount(10);
+              
+        groups.AddGroup("notification-sending", size: 10, maxConcurrency: 20)
+              .WithQueue("notification.events")
+              .WithPrefetchCount(50);
     });
-});
 
-// Scaled handler
-[ConsumerGroup("order-processors")]
-public class OrderProcessor : IMessageHandler<ProcessOrderCommand>
+// Handler with consumer group attributes
+[ConsumerGroup("order-processing")]
+[MessageHandler(Queue = "order.commands", PrefetchCount = 20)]
+[RetryPolicy(MaxAttempts = 3, InitialDelayMs = 1000, Strategy = BackoffStrategy.Exponential)]
+public class OrderHandler : IMessageHandler<ProcessOrderCommand>
 {
-    private readonly ILogger<OrderProcessor> _logger;
-    private readonly int _workerId;
+    private readonly ILogger<OrderHandler> _logger;
+    private readonly IOrderService _orderService;
+    private readonly IMetricsCollector _metrics;
     
-    public OrderProcessor(ILogger<OrderProcessor> logger)
+    public OrderHandler(
+        ILogger<OrderHandler> logger,
+        IOrderService orderService,
+        IMetricsCollector metrics)
     {
         _logger = logger;
-        _workerId = Thread.CurrentThread.ManagedThreadId;
+        _orderService = orderService;
+        _metrics = metrics;
     }
     
-    public async Task HandleAsync(
-        ProcessOrderCommand command,
-        MessageContext context)
+    public async Task HandleAsync(ProcessOrderCommand command, MessageContext context)
     {
-        _logger.LogInformation("Worker {WorkerId} processing order {OrderId}",
-            _workerId, command.OrderId);
+        var stopwatch = Stopwatch.StartNew();
         
-        // Process order
-        await ProcessOrderAsync(command);
+        try
+        {
+            _logger.LogInformation("Processing order {OrderId} in consumer group", command.OrderId);
+            
+            await _orderService.ProcessOrderAsync(command);
+            
+            _metrics.RecordMessageProcessed(typeof(ProcessOrderCommand).Name, 
+                stopwatch.Elapsed, success: true);
+                
+            _logger.LogInformation("Successfully processed order {OrderId} in {Duration}ms", 
+                command.OrderId, stopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _metrics.RecordMessageProcessed(typeof(ProcessOrderCommand).Name, 
+                stopwatch.Elapsed, success: false);
+                
+            _logger.LogError(ex, "Failed to process order {OrderId}", command.OrderId);
+            throw;
+        }
     }
 }
 
-// Or manually create multiple instances
-public class OrderProcessingService : BackgroundService
+// Advanced consumer group with custom configuration
+public class HighVolumeEventProcessor : BackgroundService
 {
-    private readonly IServiceProvider _serviceProvider;
-    private readonly List<Task> _workers = new();
-    
+    private readonly IConsumerGroup _consumerGroup;
+    private readonly ILogger<HighVolumeEventProcessor> _logger;
+
+    public HighVolumeEventProcessor(
+        IConsumerGroupFactory factory,
+        ILogger<HighVolumeEventProcessor> logger)
+    {
+        _consumerGroup = factory.CreateGroup(new ConsumerGroupConfig
+        {
+            Name = "high-volume-events",
+            Size = Environment.ProcessorCount * 2,
+            MaxConcurrency = 50,
+            QueueName = "events.high-volume",
+            PrefetchCount = 100,
+            AutoScaling = new AutoScalingConfig
+            {
+                Enabled = true,
+                MinSize = 2,
+                MaxSize = 20,
+                ScaleUpThreshold = 0.8,   // Scale up at 80% utilization
+                ScaleDownThreshold = 0.3, // Scale down at 30% utilization
+                ScaleUpCooldown = TimeSpan.FromMinutes(2),
+                ScaleDownCooldown = TimeSpan.FromMinutes(5)
+            }
+        });
+        _logger = logger;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        for (int i = 0; i < 5; i++)
-        {
-            var workerId = i;
-            _workers.Add(Task.Run(async () =>
-            {
-                using var scope = _serviceProvider.CreateScope();
-                var subscriber = scope.ServiceProvider
-                    .GetRequiredService<IMessageSubscriber>();
-                var handler = scope.ServiceProvider
-                    .GetRequiredService<OrderProcessor>();
-                
-                await subscriber.SubscribeAsync<ProcessOrderCommand>(
-                    $"order-processor-{workerId}",
-                    handler.HandleAsync,
-                    options => options.WithPrefetchCount(2),
-                    cancellationToken: stoppingToken);
-            }));
-        }
+        await _consumerGroup.StartAsync(stoppingToken);
         
-        await Task.WhenAll(_workers);
+        // Monitor consumer group health
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            var metrics = await _consumerGroup.GetMetricsAsync();
+            
+            _logger.LogInformation(
+                "Consumer group status: {ActiveConsumers}/{TotalConsumers} consumers, " +
+                "Queue depth: {QueueDepth}, Utilization: {Utilization:P2}",
+                metrics.ActiveConsumers, metrics.TotalConsumers,
+                metrics.QueueDepth, metrics.Utilization);
+                
+            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+        }
+    }
+    
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await _consumerGroup.StopAsync(cancellationToken);
+        await base.StopAsync(cancellationToken);
     }
 }
 ```

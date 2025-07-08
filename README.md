@@ -66,14 +66,32 @@ Mmate provides high-level abstractions for messaging patterns built on top of br
 
 ## Platform Comparison
 
-| Feature | .NET | Go |
-|---------|------|-----|
-| Minimum Version | .NET 6.0+ | Go 1.21+ |
-| Dependency Injection | Built-in ASP.NET Core DI | Manual wiring |
-| Async Model | async/await | Goroutines + Context |
-| Configuration | appsettings.json | Environment variables |
-| Testing | xUnit/NUnit | testing package |
-| Package Manager | NuGet | Go modules |
+### Go Implementation - Enterprise Ready
+- **Status**: 🟢 **Production Ready** with full enterprise feature set
+- **Target**: High-scale distributed systems, enterprise environments
+- **Features**: All messaging patterns, advanced reliability, monitoring, scaling
+
+### .NET Implementation - Enterprise Ready (85% Parity)
+- **Status**: 🟢 **Enterprise Ready** - Approaching feature parity with Go
+- **Target**: Enterprise .NET applications, ASP.NET Core integration, microservices
+- **Features**: Full messaging patterns, middleware architecture, advanced monitoring, StageFlow workflows
+
+| Feature | .NET Status | Go Status |
+|---------|-------------|-----------|
+| **Publishing/Subscribing** | ✅ Complete | ✅ Complete |
+| **Request/Reply** | ✅ Complete | ✅ Complete |
+| **Batch Operations** | ✅ Atomic batch publishing | ✅ Message batching |
+| **Circuit Breakers** | ✅ Middleware-based | ✅ Built-in reliability |
+| **Retry Logic** | ✅ Exponential backoff | ✅ TTL-based persistent retry |
+| **Dead Letter Queues** | ✅ Standard DLQ handling | ✅ Advanced DLQ patterns |
+| **Consumer Groups** | ✅ Auto-scaling groups | ✅ Auto-scaling groups |
+| **Workflows (StageFlow)** | ✅ Sequential pipelines only | ✅ Advanced sagas with compensation |
+| **Health Monitoring** | ✅ ASP.NET Core health checks | ✅ Service monitoring |
+| **Message Validation** | ✅ JSON schema + contract validation | ✅ JSON schema + contract validation |
+| **Contract Auto-Discovery** | ❌ Manual service configuration | ✅ Automatic service discovery |
+| **Acknowledgment Tracking** | 🚧 In development | ✅ Application-level tracking |
+
+**Migration Notes**: Choose based on your technology stack and specific requirements. 
 
 ## Getting Help
 
@@ -82,8 +100,3 @@ Mmate provides high-level abstractions for messaging patterns built on top of br
 - 💬 Community discussions on GitHub Discussions
 - 📧 Commercial support available
 
-## Contributing
-
-See the contributing guide for your platform:
-- [Contributing to .NET](https://github.com/mmate/mmate-dotnet/CONTRIBUTING.md)
-- [Contributing to Go](https://github.com/glimte/mmate-go/CONTRIBUTING.md)

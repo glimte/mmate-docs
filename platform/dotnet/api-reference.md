@@ -6,6 +6,8 @@ This document provides a complete API reference for the Mmate .NET framework.
 
 - [Contracts](#contracts)
 - [Messaging](#messaging)
+- [Batch Publishing](#batch-publishing)
+- [Middleware](#middleware)
 - [StageFlow](#stageflow)
 - [SyncAsyncBridge](#syncasyncbridge)
 - [Interceptors](#interceptors)
@@ -177,6 +179,184 @@ public static class ServiceCollectionExtensions
         this IMmateMessagingBuilder builder)
         where THandler : class, IMessageHandler<TMessage>
         where TMessage : class;
+}
+```
+
+## Batch Publishing
+
+### Core Interfaces
+
+#### IBatchPublisher
+```csharp
+public interface IBatchPublisher
+{
+    Task PublishBatchAsync<T>(IEnumerable<T> messages, 
+        BatchPublishingOptions options = null, 
+        CancellationToken cancellationToken = default) where T : class;
+        
+    Task PublishBatchAsync(IEnumerable<object> messages, 
+        string routingKey, 
+        BatchPublishingOptions options = null, 
+        CancellationToken cancellationToken = default);
+        
+    Task<BatchPublishResult> PublishBatchWithResultAsync<T>(IEnumerable<T> messages, 
+        BatchPublishingOptions options = null, 
+        CancellationToken cancellationToken = default) where T : class;
+}
+```
+
+#### IBatch<T>
+```csharp
+public interface IBatch<T> where T : class
+{
+    void Add(T message);
+    void AddRange(IEnumerable<T> messages);
+    Task PublishAsync(CancellationToken cancellationToken = default);
+    void Clear();
+    int Count { get; }
+    bool IsFull { get; }
+}
+```
+
+### Configuration
+
+#### BatchPublishingOptions
+```csharp
+public class BatchPublishingOptions
+{
+    public int MaxBatchSize { get; set; } = 100;
+    public TimeSpan FlushInterval { get; set; } = TimeSpan.FromSeconds(1);
+    public bool EnableAutoFlush { get; set; } = true;
+    public bool WaitForConfirmation { get; set; } = false;
+    public TimeSpan ConfirmationTimeout { get; set; } = TimeSpan.FromSeconds(30);
+}
+```
+
+#### BatchPublishResult
+```csharp
+public class BatchPublishResult
+{
+    public int TotalMessages { get; set; }
+    public int SuccessfulMessages { get; set; }
+    public int FailedMessages { get; set; }
+    public List<BatchPublishError> Errors { get; set; }
+    public TimeSpan Duration { get; set; }
+    public bool Success => FailedMessages == 0;
+}
+
+public class BatchPublishError
+{
+    public int MessageIndex { get; set; }
+    public string ErrorMessage { get; set; }
+    public Exception Exception { get; set; }
+}
+```
+
+### Extension Methods
+
+```csharp
+public static class BatchPublishingExtensions
+{
+    public static IBatch<T> CreateBatch<T>(this IBatchPublisher publisher, 
+        BatchPublishingOptions options = null) where T : class;
+        
+    public static async Task PublishInBatchesAsync<T>(this IBatchPublisher publisher,
+        IEnumerable<T> messages,
+        int batchSize = 100,
+        CancellationToken cancellationToken = default) where T : class;
+}
+```
+
+## Middleware
+
+### Core Interfaces
+
+#### IMessageMiddleware
+```csharp
+public interface IMessageMiddleware
+{
+    Task InvokeAsync(MessageContext context, MessageDelegate next);
+}
+```
+
+#### MiddlewarePipeline
+```csharp
+public class MiddlewarePipeline
+{
+    public MiddlewarePipeline Use<TMiddleware>() where TMiddleware : class, IMessageMiddleware;
+    public MiddlewarePipeline Use(Func<MessageContext, MessageDelegate, Task> middleware);
+    public MiddlewarePipeline UseLogging(Action<LoggingMiddlewareOptions> configure = null);
+    public MiddlewarePipeline UseMetrics(Action<MetricsMiddlewareOptions> configure = null);
+    public MiddlewarePipeline UseRetryPolicy(Action<RetryMiddlewareOptions> configure = null);
+    public MiddlewarePipeline UseCircuitBreaker(Action<CircuitBreakerMiddlewareOptions> configure = null);
+    public MiddlewarePipeline UseErrorHandling(Action<ErrorHandlingMiddlewareOptions> configure = null);
+}
+```
+
+### Built-in Middleware
+
+#### LoggingMiddleware
+```csharp
+public class LoggingMiddleware : IMessageMiddleware
+{
+    public Task InvokeAsync(MessageContext context, MessageDelegate next);
+}
+
+public class LoggingMiddlewareOptions
+{
+    public LogLevel LogLevel { get; set; } = LogLevel.Information;
+    public bool LogMessageContent { get; set; } = false;
+    public bool LogHeaders { get; set; } = true;
+    public string MessageTemplate { get; set; } = "Processing {MessageType} with ID {MessageId}";
+}
+```
+
+#### MetricsMiddleware
+```csharp
+public class MetricsMiddleware : IMessageMiddleware
+{
+    public Task InvokeAsync(MessageContext context, MessageDelegate next);
+}
+
+public class MetricsMiddlewareOptions
+{
+    public bool EnableDetailedMetrics { get; set; } = true;
+    public bool RecordProcessingTime { get; set; } = true;
+    public bool RecordMessageSize { get; set; } = true;
+    public string MetricsPrefix { get; set; } = "mmate.messaging";
+}
+```
+
+#### RetryMiddleware
+```csharp
+public class RetryMiddleware : IMessageMiddleware
+{
+    public Task InvokeAsync(MessageContext context, MessageDelegate next);
+}
+
+public class RetryMiddlewareOptions
+{
+    public int MaxAttempts { get; set; } = 3;
+    public TimeSpan InitialDelay { get; set; } = TimeSpan.FromSeconds(1);
+    public TimeSpan MaxDelay { get; set; } = TimeSpan.FromMinutes(1);
+    public double BackoffMultiplier { get; set; } = 2.0;
+    public Func<Exception, bool> ShouldRetry { get; set; }
+}
+```
+
+#### CircuitBreakerMiddleware
+```csharp
+public class CircuitBreakerMiddleware : IMessageMiddleware
+{
+    public Task InvokeAsync(MessageContext context, MessageDelegate next);
+}
+
+public class CircuitBreakerMiddlewareOptions
+{
+    public int FailureThreshold { get; set; } = 5;
+    public TimeSpan OpenTimeout { get; set; } = TimeSpan.FromSeconds(30);
+    public TimeSpan HalfOpenTimeout { get; set; } = TimeSpan.FromSeconds(10);
+    public Func<Exception, bool> CountAsFailure { get; set; }
 }
 ```
 
@@ -459,6 +639,82 @@ public static class MessagingBridgeExtensions
 ```
 
 ## Monitoring
+
+### Metrics Collection
+
+#### IMetricsCollector
+```csharp
+public interface IMetricsCollector
+{
+    void RecordMessagePublished(string messageType, string routingKey);
+    void RecordMessageProcessed(string messageType, TimeSpan processingTime, bool success);
+    void RecordBatchPublished(int messageCount, TimeSpan duration);
+    void RecordCircuitBreakerStateChange(string serviceName, CircuitBreakerState newState);
+    void RecordQueueDepth(string queueName, int depth);
+    void RecordConsumerCount(string queueName, int consumerCount);
+    Task<MetricsSummary> GetMetricsSummaryAsync(TimeSpan? period = null);
+}
+```
+
+#### IAdvancedMetricsCollector
+```csharp
+public interface IAdvancedMetricsCollector : IMetricsCollector
+{
+    void RecordLatency(string operation, TimeSpan latency);
+    void RecordThroughput(string operation, int count);
+    void RecordErrorRate(string operation, bool isError);
+    Task<LatencyStats> GetLatencyStatsAsync(string operation, TimeSpan period);
+    Task<ThroughputStats> GetThroughputStatsAsync(string operation, TimeSpan period);
+    Task<ErrorAnalysis> GetErrorAnalysisAsync(TimeSpan period);
+}
+```
+
+### Configuration
+
+#### MetricsOptions
+```csharp
+public class MetricsOptions
+{
+    public bool EnableDetailedMetrics { get; set; } = true;
+    public TimeSpan CollectionInterval { get; set; } = TimeSpan.FromSeconds(30);
+    public string MetricsPrefix { get; set; } = "mmate";
+    public bool EnableHistograms { get; set; } = true;
+    public bool EnableCounters { get; set; } = true;
+    public bool EnableGauges { get; set; } = true;
+    public List<string> ExcludedMetrics { get; set; } = new();
+}
+```
+
+### Data Models
+
+#### MetricsSummary
+```csharp
+public class MetricsSummary
+{
+    public DateTime CollectionTime { get; set; }
+    public TimeSpan Period { get; set; }
+    public int TotalMessagesPublished { get; set; }
+    public int TotalMessagesProcessed { get; set; }
+    public int TotalErrors { get; set; }
+    public TimeSpan AverageProcessingTime { get; set; }
+    public Dictionary<string, ConsumerMetrics> ConsumerMetrics { get; set; }
+    public Dictionary<string, LatencyStats> LatencyMetrics { get; set; }
+}
+```
+
+#### ConsumerMetrics
+```csharp
+public class ConsumerMetrics
+{
+    public string QueueName { get; set; }
+    public int MessageCount { get; set; }
+    public int ConsumerCount { get; set; }
+    public TimeSpan AverageProcessingTime { get; set; }
+    public int ErrorCount { get; set; }
+    public double ErrorRate { get; set; }
+    public DateTime LastActivity { get; set; }
+}
+```
 
 ### Command Line Interface
 
